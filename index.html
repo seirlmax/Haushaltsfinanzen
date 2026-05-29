@@ -219,6 +219,13 @@ input[type=range]{flex:1;accent-color:var(--blue);}
           <option value="storniert">Storniert</option>
         </select></div>
       </div>
+      <div class="form-row">
+        <div><label>Bezahlt von</label><select id="hb-payer">
+          <option value="ich">Max</option>
+          <option value="mutter">Gerti</option>
+          <option value="freundin">Lisa</option>
+        </select></div>
+      </div>
       <button class="btn btn-primary" onclick="addHausbau()"><i class="ti ti-plus"></i> Hinzufügen</button>
     </div>
     <div class="card">
@@ -509,8 +516,9 @@ function addHausbau() {
   const firma  = document.getElementById("hb-firma").value.trim();
   const cat    = document.getElementById("hb-cat").value;
   const status = document.getElementById("hb-status").value;
+  const payer  = document.getElementById("hb-payer").value;
   if(!desc||isNaN(amount)||amount<=0){alert("Bitte Beschreibung und Betrag ausfüllen!");return;}
-  db.ref("hausbau").push({desc,amount,date,firma,cat,status});
+  db.ref("hausbau").push({desc,amount,date,firma,cat,status,payer});
   document.getElementById("hb-desc").value="";
   document.getElementById("hb-amount").value="";
   document.getElementById("hb-firma").value="";
@@ -534,8 +542,10 @@ function applyHausbauFilter() { renderHausbau(); }
 function renderHausbau() {
   const el = document.getElementById("hb-list");
   if(!el) return;
-  const filterCat    = document.getElementById("hb-filter-cat")?.value||"alle";
-  const filterStatus = document.getElementById("hb-filter-status")?.value||"alle";
+  const fcEl = document.getElementById("hb-filter-cat");
+  const fsEl = document.getElementById("hb-filter-status");
+  const filterCat    = fcEl ? fcEl.value : "alle";
+  const filterStatus = fsEl ? fsEl.value : "alle";
   let items = [...hausbauItems];
   if(filterCat!=="alle")    items = items.filter(i=>i.cat===filterCat);
   if(filterStatus!=="alle") items = items.filter(i=>i.status===filterStatus);
@@ -556,6 +566,7 @@ function renderHausbau() {
         <div class="row-meta">${i.date||""} ${i.firma?"· "+i.firma:""} · ${hbCatLabels[i.cat]||i.cat}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        ${i.payer?`<span class="badge badge-${i.payer}">${pLabels[i.payer]||i.payer}</span>`:""}
         <select onchange="updateHausbauStatus('${i.fbKey}',this.value)"
           style="font-size:12px;padding:3px 8px;border-radius:20px;border:none;background:${statusBg[i.status]||"var(--bg2)"};color:${statusFg[i.status]||"var(--text2)"};cursor:pointer;width:auto">
           <option value="offen"      ${i.status==="offen"?"selected":""}>Offen</option>
