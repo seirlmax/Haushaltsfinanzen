@@ -40,7 +40,7 @@ let catChart = null;
 let currentMonth = new Date();
 
 const persons = ["ich","mutter","freundin"];
-const pLabels = {ich:"Ich",mutter:"Mutter",freundin:"Freundin"};
+const pLabels = {ich:"Max",mutter:"Gerti",freundin:"Lisa"};
 const pColors = {ich:"#378ADD",mutter:"#1D9E75",freundin:"#BA7517"};
 const catLabels = {haushalt:"Haushalt",umbau:"Umbau",lebensmittel:"Lebensmittel",nebenkosten:"Nebenkosten",versicherung:"Versicherung",sonstiges:"Sonstiges"};
 const catColors = ["#378ADD","#1D9E75","#E24B4A","#BA7517","#534AB7","#888780"];
@@ -52,6 +52,7 @@ function yymm(d) { return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,
 const today = new Date().toISOString().split("T")[0];
 document.getElementById("in-date").value = today;
 document.getElementById("month-title").textContent = fmtM(currentMonth);
+document.getElementById("hb-date").value = today;
 
 // Listen to Firebase
 onValue(ref(db, "expenses"), (snap) => {
@@ -90,7 +91,7 @@ function applyFixedCosts() {
 }
 
 window.showTab = function(t) {
-  const keys = ["uebersicht","ausgaben","fixkosten","monat","abrechnung","kredit"];
+  const keys = ["uebersicht","ausgaben","fixkosten","monat","abrechnung","kredit","hausbau"];
   document.querySelectorAll(".tab").forEach((b,i) => b.classList.toggle("active", keys[i]===t));
   document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
   document.getElementById("tab-"+t).classList.add("active");
@@ -160,6 +161,7 @@ window.changeMonth = function(dir) {
 
 function renderMonth() {
   document.getElementById("month-title").textContent = fmtM(currentMonth);
+document.getElementById("hb-date").value = today;
   const key = yymm(currentMonth);
   const moExp = expenses.filter(e=>e.date.startsWith(key));
   const moTotal = moExp.reduce((s,e)=>s+e.amount,0);
@@ -290,6 +292,87 @@ window.updateCredit = function() {
   });
 };
 
+
+// ── HAUSBAU ──────────────────────────────────────────────────────────────
+let hausbauItems = [];
+
+onValue(ref(db, "hausbau"), (snap) => {
+  hausbauItems = [];
+  snap.forEach(child => hausbauItems.push({fbKey: child.key, ...child.val()}));
+  renderHausbau();
+}, (err) => setSyncBadge("err"));
+
+window.addHausbau = function() {
+  const desc = document.getElementById("hb-desc").value.trim();
+  const amount = parseFloat(document.getElementById("hb-amount").value);
+  const date = document.getElementById("hb-date").value;
+  const firma = document.getElementById("hb-firma").value.trim();
+  const cat = document.getElementById("hb-cat").value;
+  const status = document.getElementById("hb-status").value;
+  if(!desc||isNaN(amount)||amount<=0){alert("Bitte Beschreibung und Betrag ausfüllen!");return;}
+  push(ref(db,"hausbau"),{desc,amount,date,firma,cat,status});
+  document.getElementById("hb-desc").value="";
+  document.getElementById("hb-amount").value="";
+  document.getElementById("hb-firma").value="";
+  document.getElementById("hb-date").value=today;
+};
+
+window.deleteHausbau = function(fbKey) {
+  if(!confirm("Eintrag löschen?"))return;
+  remove(ref(db,"hausbau/"+fbKey));
+};
+
+window.updateHausbauStatus = function(fbKey, status) {
+  const item = hausbauItems.find(i=>i.fbKey===fbKey);
+  if(!item) return;
+  set(ref(db,"hausbau/"+fbKey), {...item, status, fbKey:undefined});
+};
+
+const hbCatLabels = {fundament:"Fundament",rohbau:"Rohbau",dach:"Dach",fenster:"Fenster & Türen",elektro:"Elektro",sanitaer:"Sanitär",heizung:"Heizung",innen:"Innenausbau",fassade:"Fassade",garten:"Garten & Außen",sonstiges:"Sonstiges"};
+const hbStatusColors = {offen:"var(--amber-bg),var(--amber-text)",bezahlt:"var(--green-bg),var(--green-text)",ausstehend:"var(--blue-bg),var(--blue-text)",storniert:"var(--red-bg),var(--red-text)"};
+
+function renderHausbau() {
+  const el = document.getElementById("hb-list");
+  const filterCat = document.getElementById("hb-filter-cat")?.value || "alle";
+  const filterStatus = document.getElementById("hb-filter-status")?.value || "alle";
+  let items = [...hausbauItems];
+  if(filterCat !== "alle") items = items.filter(i=>i.cat===filterCat);
+  if(filterStatus !== "alle") items = items.filter(i=>i.status===filterStatus);
+  items.sort((a,b)=>b.date?.localeCompare(a.date||"")||0);
+
+  const total = hausbauItems.reduce((s,i)=>s+i.amount,0);
+  const bezahlt = hausbauItems.filter(i=>i.status==="bezahlt").reduce((s,i)=>s+i.amount,0);
+  const offen = hausbauItems.filter(i=>i.status==="offen"||i.status==="ausstehend").reduce((s,i)=>s+i.amount,0);
+  document.getElementById("hb-total").textContent = fmt(total);
+  document.getElementById("hb-bezahlt").textContent = fmt(bezahlt);
+  document.getElementById("hb-offen").textContent = fmt(offen);
+
+  if(!items.length){el.innerHTML='<div class="empty">Keine Einträge.</div>';return;}
+  el.innerHTML = items.map(i=>{
+    const sc = (hbStatusColors[i.status]||"var(--bg2),var(--text2)").split(",");
+    const statusLabel = {offen:"Offen",bezahlt:"Bezahlt",ausstehend:"Ausstehend",storniert:"Storniert"}[i.status]||i.status;
+    return `<div class="row" style="align-items:flex-start;flex-wrap:wrap;gap:8px;padding:12px 0">
+      <div class="row-desc">
+        <div class="row-title" style="font-weight:500">${i.desc}</div>
+        <div class="row-meta" style="margin-top:3px">${i.date||""} ${i.firma?'· '+i.firma:""} · ${hbCatLabels[i.cat]||i.cat}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <select onchange="updateHausbauStatus('${i.fbKey}', this.value)" style="font-size:12px;padding:2px 6px;border-radius:20px;border:none;background:${sc[0]};color:${sc[1]};cursor:pointer;width:auto">
+          <option value="offen" ${i.status==="offen"?"selected":""}>Offen</option>
+          <option value="ausstehend" ${i.status==="ausstehend"?"selected":""}>Ausstehend</option>
+          <option value="bezahlt" ${i.status==="bezahlt"?"selected":""}>Bezahlt</option>
+          <option value="storniert" ${i.status==="storniert"?"selected":""}>Storniert</option>
+        </select>
+        <div style="font-weight:500;font-size:15px;min-width:80px;text-align:right">${fmt(i.amount)}</div>
+        <button class="btn btn-sm btn-danger" onclick="deleteHausbau('${i.fbKey}')"><i class="ti ti-trash"></i></button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+window.applyHausbauFilter = function() { renderHausbau(); };
+
+
 setTimeout(updateCredit, 300);
 </script>
 <style>
@@ -360,6 +443,7 @@ input[type=range]{flex:1;accent-color:var(--blue);}
     <button class="tab" onclick="showTab('monat')"><i class="ti ti-calendar-stats"></i> Monatsübersicht</button>
     <button class="tab" onclick="showTab('abrechnung')"><i class="ti ti-scale"></i> Abrechnung</button>
     <button class="tab" onclick="showTab('kredit')"><i class="ti ti-building-bank"></i> Kredit</button>
+    <button class="tab" onclick="showTab('hausbau')"><i class="ti ti-home-plus"></i> Hausbau</button>
   </div>
 
   <div id="tab-uebersicht" class="section active">
@@ -380,16 +464,16 @@ input[type=range]{flex:1;accent-color:var(--blue);}
         <div><label>Betrag (€)</label><input type="number" id="in-amount" placeholder="0.00" min="0" step="0.01" /></div>
       </div>
       <div class="form-row">
-        <div><label>Bezahlt von</label><select id="in-payer"><option value="ich">Ich</option><option value="mutter">Mutter</option><option value="freundin">Freundin</option></select></div>
+        <div><label>Bezahlt von</label><select id="in-payer"><option value="ich">Max</option><option value="mutter">Gerti</option><option value="freundin">Lisa</option></select></div>
         <div><label>Kategorie</label><select id="in-cat"><option value="haushalt">Haushalt</option><option value="umbau">Umbau / Renovierung</option><option value="lebensmittel">Lebensmittel</option><option value="nebenkosten">Nebenkosten</option><option value="versicherung">Versicherung</option><option value="sonstiges">Sonstiges</option></select></div>
       </div>
       <div style="margin-bottom:12px"><label>Datum</label><input type="date" id="in-date" style="max-width:200px" /></div>
       <div style="margin-bottom:16px">
         <label>Aufteilung</label>
         <div style="display:flex;gap:16px;margin-top:8px">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="split-ich" checked style="width:auto"> Ich</label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="split-mutter" checked style="width:auto"> Mutter</label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="split-freundin" checked style="width:auto"> Freundin</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="split-ich" checked style="width:auto"> Max</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="split-mutter" checked style="width:auto"> Gerti</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="split-freundin" checked style="width:auto"> Lisa</label>
         </div>
       </div>
       <button class="btn btn-primary" onclick="addExpense()"><i class="ti ti-plus"></i> Hinzufügen</button>
@@ -406,15 +490,15 @@ input[type=range]{flex:1;accent-color:var(--blue);}
         <div><label>Betrag (€)</label><input type="number" id="fix-amount" placeholder="0.00" min="0" step="0.01" /></div>
       </div>
       <div class="form-row">
-        <div><label>Bezahlt von</label><select id="fix-payer"><option value="ich">Ich</option><option value="mutter">Mutter</option><option value="freundin">Freundin</option></select></div>
+        <div><label>Bezahlt von</label><select id="fix-payer"><option value="ich">Max</option><option value="mutter">Gerti</option><option value="freundin">Lisa</option></select></div>
         <div><label>Kategorie</label><select id="fix-cat"><option value="nebenkosten">Nebenkosten</option><option value="versicherung">Versicherung</option><option value="haushalt">Haushalt</option><option value="sonstiges">Sonstiges</option></select></div>
       </div>
       <div style="margin-bottom:16px">
         <label>Aufteilung</label>
         <div style="display:flex;gap:16px;margin-top:8px">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="fsplit-ich" checked style="width:auto"> Ich</label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="fsplit-mutter" checked style="width:auto"> Mutter</label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="fsplit-freundin" checked style="width:auto"> Freundin</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="fsplit-ich" checked style="width:auto"> Max</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="fsplit-mutter" checked style="width:auto"> Gerti</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:14px"><input type="checkbox" id="fsplit-freundin" checked style="width:auto"> Lisa</label>
         </div>
       </div>
       <button class="btn btn-primary" onclick="addFixed()"><i class="ti ti-plus"></i> Fixkosten hinzufügen</button>
@@ -466,6 +550,75 @@ input[type=range]{flex:1;accent-color:var(--blue);}
       <div class="chart-wrap"><canvas id="creditChart"></canvas></div>
     </div>
   </div>
+
+  <div id="tab-hausbau" class="section">
+    <div class="metric-grid">
+      <div class="metric"><div class="metric-label">Gesamtkosten Hausbau</div><div class="metric-value" id="hb-total">€0,00</div></div>
+      <div class="metric"><div class="metric-label">Bereits bezahlt</div><div class="metric-value" id="hb-bezahlt">€0,00</div></div>
+      <div class="metric"><div class="metric-label">Noch offen</div><div class="metric-value" id="hb-offen">€0,00</div></div>
+    </div>
+    <div class="card">
+      <div class="section-title">Neue Rechnung / Kosten</div>
+      <div class="form-row">
+        <div><label>Beschreibung</label><input type="text" id="hb-desc" placeholder="z.B. Fliesenleger Rechnung" /></div>
+        <div><label>Betrag (€)</label><input type="number" id="hb-amount" placeholder="0.00" min="0" step="0.01" /></div>
+      </div>
+      <div class="form-row">
+        <div><label>Firma / Lieferant</label><input type="text" id="hb-firma" placeholder="z.B. Baufirma Müller" /></div>
+        <div><label>Datum</label><input type="date" id="hb-date" /></div>
+      </div>
+      <div class="form-row">
+        <div><label>Kategorie</label><select id="hb-cat">
+          <option value="fundament">Fundament</option>
+          <option value="rohbau">Rohbau</option>
+          <option value="dach">Dach</option>
+          <option value="fenster">Fenster & Türen</option>
+          <option value="elektro">Elektro</option>
+          <option value="sanitaer">Sanitär</option>
+          <option value="heizung">Heizung</option>
+          <option value="innen">Innenausbau</option>
+          <option value="fassade">Fassade</option>
+          <option value="garten">Garten & Außen</option>
+          <option value="sonstiges">Sonstiges</option>
+        </select></div>
+        <div><label>Status</label><select id="hb-status">
+          <option value="offen">Offen</option>
+          <option value="ausstehend">Ausstehend</option>
+          <option value="bezahlt">Bezahlt</option>
+          <option value="storniert">Storniert</option>
+        </select></div>
+      </div>
+      <button class="btn btn-primary" onclick="addHausbau()"><i class="ti ti-plus"></i> Hinzufügen</button>
+    </div>
+    <div class="card">
+      <div class="section-title">Alle Rechnungen</div>
+      <div style="display:flex;gap:10px;margin-bottom:1rem;flex-wrap:wrap">
+        <div style="flex:1;min-width:140px"><label>Kategorie</label><select id="hb-filter-cat" onchange="applyHausbauFilter()">
+          <option value="alle">Alle Kategorien</option>
+          <option value="fundament">Fundament</option>
+          <option value="rohbau">Rohbau</option>
+          <option value="dach">Dach</option>
+          <option value="fenster">Fenster & Türen</option>
+          <option value="elektro">Elektro</option>
+          <option value="sanitaer">Sanitär</option>
+          <option value="heizung">Heizung</option>
+          <option value="innen">Innenausbau</option>
+          <option value="fassade">Fassade</option>
+          <option value="garten">Garten & Außen</option>
+          <option value="sonstiges">Sonstiges</option>
+        </select></div>
+        <div style="flex:1;min-width:140px"><label>Status</label><select id="hb-filter-status" onchange="applyHausbauFilter()">
+          <option value="alle">Alle Status</option>
+          <option value="offen">Offen</option>
+          <option value="ausstehend">Ausstehend</option>
+          <option value="bezahlt">Bezahlt</option>
+          <option value="storniert">Storniert</option>
+        </select></div>
+      </div>
+      <div id="hb-list"><div class="empty">Noch keine Einträge.</div></div>
+    </div>
+  </div>
+
 </div>
 </body>
 </html>
