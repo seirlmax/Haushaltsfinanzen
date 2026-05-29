@@ -6,11 +6,297 @@
 <title>Haushaltsfinanzen</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref, set, onValue, push, remove } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA8eeUVZYhMOdgj132QUUZOcLRsGaIJJIE",
+  authDomain: "haushaltsfinanzen-f2247.firebaseapp.com",
+  databaseURL: "https://haushaltsfinanzen-f2247-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "haushaltsfinanzen-f2247",
+  storageBucket: "haushaltsfinanzen-f2247.firebasestorage.app",
+  messagingSenderId: "204605029197",
+  appId: "1:204605029197:web:b7cea3cc82a52408511504"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+function setSyncBadge(state) {
+  const b = document.getElementById("sync-badge");
+  b.className = "sync-badge " + (state === "ok" ? "sync-ok" : state === "err" ? "sync-err" : "sync-loading");
+  b.innerHTML = state === "ok" ? '<i class="ti ti-cloud-check"></i> Synchronisiert'
+    : state === "err" ? '<i class="ti ti-cloud-off"></i> Offline'
+    : '<i class="ti ti-refresh"></i> Verbinde...';
+}
+
+setSyncBadge("loading");
+
+let expenses = [];
+let fixedCosts = [];
+let creditChart = null;
+let catChart = null;
+let currentMonth = new Date();
+
+const persons = ["ich","mutter","freundin"];
+const pLabels = {ich:"Ich",mutter:"Mutter",freundin:"Freundin"};
+const pColors = {ich:"#378ADD",mutter:"#1D9E75",freundin:"#BA7517"};
+const catLabels = {haushalt:"Haushalt",umbau:"Umbau",lebensmittel:"Lebensmittel",nebenkosten:"Nebenkosten",versicherung:"Versicherung",sonstiges:"Sonstiges"};
+const catColors = ["#378ADD","#1D9E75","#E24B4A","#BA7517","#534AB7","#888780"];
+const monthNames = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
+
+function fmt(n) { return "€"+n.toLocaleString("de-AT",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtM(d) { return monthNames[d.getMonth()]+" "+d.getFullYear(); }
+function yymm(d) { return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
+const today = new Date().toISOString().split("T")[0];
+document.getElementById("in-date").value = today;
+document.getElementById("month-title").textContent = fmtM(currentMonth);
+
+// Listen to Firebase
+onValue(ref(db, "expenses"), (snap) => {
+  expenses = [];
+  snap.forEach(child => expenses.push({fbKey: child.key, ...child.val()}));
+  setSyncBadge("ok");
+  applyFixedCosts();
+  render();
+}, (err) => setSyncBadge("err"));
+
+onValue(ref(db, "fixedCosts"), (snap) => {
+  fixedCosts = [];
+  snap.forEach(child => fixedCosts.push({fbKey: child.key, ...child.val()}));
+  renderFixedList();
+  render();
+}, (err) => setSyncBadge("err"));
+
+function applyFixedCosts() {
+  const now = new Date();
+  const thisMonth = now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+  fixedCosts.forEach(fc => {
+    const alreadyIn = expenses.some(e => e.fixedId === fc.fbKey && e.date.startsWith(thisMonth));
+    if (!alreadyIn) {
+      push(ref(db, "expenses"), {
+        desc: fc.desc+" (automatisch)",
+        amount: fc.amount,
+        payer: fc.payer,
+        cat: fc.cat,
+        date: thisMonth+"-01",
+        split: fc.split,
+        fixedId: fc.fbKey,
+        auto: true
+      });
+    }
+  });
+}
+
+window.showTab = function(t) {
+  const keys = ["uebersicht","ausgaben","fixkosten","monat","abrechnung","kredit"];
+  document.querySelectorAll(".tab").forEach((b,i) => b.classList.toggle("active", keys[i]===t));
+  document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
+  document.getElementById("tab-"+t).classList.add("active");
+  if(t==="kredit") setTimeout(updateCredit,50);
+  if(t==="monat") renderMonth();
+  render();
+};
+
+window.addExpense = function() {
+  const desc = document.getElementById("in-desc").value.trim();
+  const amount = parseFloat(document.getElementById("in-amount").value);
+  const payer = document.getElementById("in-payer").value;
+  const cat = document.getElementById("in-cat").value;
+  const date = document.getElementById("in-date").value;
+  const split = persons.filter(p => document.getElementById("split-"+p).checked);
+  if(!desc||isNaN(amount)||amount<=0||split.length===0){alert("Bitte alle Felder ausfüllen!");return;}
+  push(ref(db,"expenses"),{desc,amount,payer,cat,date,split,auto:false});
+  document.getElementById("in-desc").value="";
+  document.getElementById("in-amount").value="";
+  document.getElementById("in-date").value=today;
+  window.showTab("uebersicht");
+};
+
+window.deleteExpense = function(fbKey) {
+  if(!confirm("Ausgabe wirklich löschen?"))return;
+  remove(ref(db,"expenses/"+fbKey));
+};
+
+window.addFixed = function() {
+  const desc = document.getElementById("fix-desc").value.trim();
+  const amount = parseFloat(document.getElementById("fix-amount").value);
+  const payer = document.getElementById("fix-payer").value;
+  const cat = document.getElementById("fix-cat").value;
+  const split = persons.filter(p => document.getElementById("fsplit-"+p).checked);
+  if(!desc||isNaN(amount)||amount<=0||split.length===0){alert("Bitte alle Felder ausfüllen!");return;}
+  push(ref(db,"fixedCosts"),{desc,amount,payer,cat,split});
+  document.getElementById("fix-desc").value="";
+  document.getElementById("fix-amount").value="";
+};
+
+window.deleteFixed = function(fbKey) {
+  if(!confirm("Fixkosten löschen? Bereits eingetragene Ausgaben bleiben erhalten."))return;
+  remove(ref(db,"fixedCosts/"+fbKey));
+};
+
+function renderFixedList() {
+  const el = document.getElementById("fix-list");
+  if(!fixedCosts.length){el.innerHTML='<div class="empty">Keine Fixkosten eingetragen.</div>';return;}
+  const totalFix = fixedCosts.reduce((s,f)=>s+f.amount,0);
+  el.innerHTML = fixedCosts.map(f=>`
+    <div class="row">
+      <div class="row-desc">
+        <div class="row-title">${f.desc} <span class="tag-fix">monatlich</span></div>
+        <div class="row-meta">${f.cat} · ${f.split.map(p=>pLabels[p]).join(", ")} (je ${fmt(f.amount/f.split.length)})</div>
+      </div>
+      <span class="badge badge-${f.payer}">${pLabels[f.payer]}</span>
+      <div class="row-amount">${fmt(f.amount)}</div>
+      <button class="btn btn-sm btn-danger" onclick="deleteFixed('${f.fbKey}')"><i class="ti ti-trash"></i></button>
+    </div>`).join("")
+    +`<div style="display:flex;justify-content:flex-end;padding-top:10px;font-weight:500;font-size:14px">Gesamt: ${fmt(totalFix)}/Monat</div>`;
+}
+
+window.changeMonth = function(dir) {
+  currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth()+dir, 1);
+  renderMonth();
+};
+
+function renderMonth() {
+  document.getElementById("month-title").textContent = fmtM(currentMonth);
+  const key = yymm(currentMonth);
+  const moExp = expenses.filter(e=>e.date.startsWith(key));
+  const moTotal = moExp.reduce((s,e)=>s+e.amount,0);
+  const moFix = moExp.filter(e=>e.auto).reduce((s,e)=>s+e.amount,0);
+  document.getElementById("mo-gesamt").textContent = fmt(moTotal);
+  document.getElementById("mo-fix").textContent = fmt(moFix);
+  document.getElementById("mo-var").textContent = fmt(moTotal-moFix);
+  const catTotals = {};
+  moExp.forEach(e=>{catTotals[e.cat]=(catTotals[e.cat]||0)+e.amount;});
+  const cats = Object.keys(catTotals);
+  if(catChart)catChart.destroy();
+  if(cats.length){
+    catChart = new Chart(document.getElementById("catChart"),{
+      type:"doughnut",
+      data:{labels:cats.map(c=>catLabels[c]||c),datasets:[{data:cats.map(c=>Math.round(catTotals[c]*100)/100),backgroundColor:catColors}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"right"}}}
+    });
+  }
+  document.getElementById("mo-ausgaben").innerHTML = moExp.length
+    ? [...moExp].reverse().map(e=>`<div class="row">
+        <div class="row-desc">
+          <div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':""}</div>
+          <div class="row-meta">${e.date} · ${e.cat} · ${e.split.map(p=>pLabels[p]).join(", ")} (je ${fmt(e.amount/e.split.length)})</div>
+        </div>
+        <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
+        <div class="row-amount">${fmt(e.amount)}</div>
+      </div>`).join("")
+    : '<div class="empty">Keine Ausgaben in diesem Monat.</div>';
+}
+
+function render() {
+  const total = expenses.reduce((s,e)=>s+e.amount,0);
+  const key = yymm(new Date());
+  const moTotal = expenses.filter(e=>e.date.startsWith(key)).reduce((s,e)=>s+e.amount,0);
+  const fixTotal = fixedCosts.reduce((s,f)=>s+f.amount,0);
+  document.getElementById("m-gesamt").textContent = fmt(total);
+  document.getElementById("m-monat").textContent = fmt(moTotal);
+  document.getElementById("m-fix").textContent = fmt(fixTotal)+"/Mo";
+  const paid={},owes={};
+  persons.forEach(p=>{paid[p]=0;owes[p]=0;});
+  expenses.forEach(e=>{
+    paid[e.payer]+=e.amount;
+    const sh=e.amount/e.split.length;
+    e.split.forEach(p=>owes[p]+=sh);
+  });
+  document.getElementById("split-bars").innerHTML = persons.map(p=>{
+    const pct=total>0?Math.round(paid[p]/total*100):0;
+    return `<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+        <span style="font-size:14px">${pLabels[p]}</span>
+        <span style="font-size:13px;color:var(--text2)">${fmt(paid[p])} bezahlt · ${fmt(owes[p])} Anteil</span>
+      </div>
+      <div style="background:var(--bg2);height:8px;border-radius:4px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:${pColors[p]};border-radius:4px"></div>
+      </div></div>`;
+  }).join("");
+  const last = [...expenses].reverse().slice(0,5);
+  document.getElementById("letzte-ausgaben").innerHTML = last.length
+    ? last.map(e=>`<div class="row">
+        <div class="row-desc">
+          <div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':""}</div>
+          <div class="row-meta">${e.date} · ${e.cat}</div>
+        </div>
+        <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
+        <div class="row-amount">${fmt(e.amount)}</div>
+      </div>`).join("")
+    : '<div class="empty">Noch keine Ausgaben.</div>';
+  document.getElementById("alle-ausgaben").innerHTML = expenses.length
+    ? [...expenses].reverse().map(e=>`<div class="row">
+        <div class="row-desc">
+          <div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':""}</div>
+          <div class="row-meta">${e.date} · ${e.cat} · ${e.split.map(p=>pLabels[p]).join(", ")} (je ${fmt(e.amount/e.split.length)})</div>
+        </div>
+        <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
+        <div class="row-amount">${fmt(e.amount)}</div>
+        ${!e.auto?`<button class="btn btn-sm btn-danger" onclick="deleteExpense('${e.fbKey}')"><i class="ti ti-trash"></i></button>`:""}
+      </div>`).join("")
+    : '<div class="empty">Noch keine Ausgaben.</div>';
+  document.getElementById("balance-body").innerHTML = persons.map(p=>{
+    const bal=paid[p]-owes[p];
+    return `<tr><td><span class="badge badge-${p}">${pLabels[p]}</span></td><td>${fmt(paid[p])}</td><td>${fmt(owes[p])}</td><td class="${bal>=0?"positive":"negative"}">${bal>=0?"+":""}${fmt(bal)}</td></tr>`;
+  }).join("");
+  const b={};persons.forEach(p=>b[p]=paid[p]-owes[p]);
+  const transfers=[];
+  for(let i=0;i<10;i++){
+    const debtor=persons.reduce((a,c)=>b[c]<b[a]?c:a,persons[0]);
+    const creditor=persons.reduce((a,c)=>b[c]>b[a]?c:a,persons[0]);
+    if(Math.abs(b[debtor])<0.01)break;
+    const amt=Math.min(-b[debtor],b[creditor]);
+    if(amt<0.01)break;
+    transfers.push({from:debtor,to:creditor,amt});
+    b[debtor]+=amt;b[creditor]-=amt;
+  }
+  document.getElementById("settlements").innerHTML = transfers.length
+    ? transfers.map(t=>`<div class="row">
+        <span class="badge badge-${t.from}">${pLabels[t.from]}</span>
+        <i class="ti ti-arrow-right" style="color:var(--text3)"></i>
+        <span class="badge badge-${t.to}">${pLabels[t.to]}</span>
+        <span style="margin-left:auto;font-weight:500">${fmt(t.amt)}</span>
+      </div>`).join("")
+    : '<div class="empty" style="padding:1rem">Alle Zahlungen sind ausgeglichen ✓</div>';
+}
+
+window.updateCredit = function() {
+  const P=parseFloat(document.getElementById("sl-betrag").value);
+  const r=parseFloat(document.getElementById("sl-zins").value)/100/12;
+  const n=parseInt(document.getElementById("sl-jahre").value)*12;
+  document.getElementById("out-betrag").textContent="€"+P.toLocaleString("de-AT");
+  document.getElementById("out-zins").textContent=parseFloat(document.getElementById("sl-zins").value).toFixed(1).replace(".",",")+"%";
+  document.getElementById("out-jahre").textContent=document.getElementById("sl-jahre").value+" Jahre";
+  const monthly=r===0?P/n:P*r*Math.pow(1+r,n)/(Math.pow(1+r,n)-1);
+  document.getElementById("cr-rate").textContent=fmt(monthly);
+  document.getElementById("cr-gesamt").textContent=fmt(monthly*n);
+  document.getElementById("cr-zinsen").textContent=fmt(monthly*n-P);
+  const years=parseInt(document.getElementById("sl-jahre").value);
+  const yL=[],yT=[],yZ=[];let rem=P;
+  for(let y=1;y<=years;y++){
+    let yi=0,yt=0;
+    for(let m=0;m<12;m++){const ip=rem*r;yi+=ip;yt+=monthly-ip;rem-=(monthly-ip);}
+    yL.push("J"+y);yZ.push(Math.round(yi));yT.push(Math.round(yt));
+  }
+  if(creditChart)creditChart.destroy();
+  creditChart=new Chart(document.getElementById("creditChart"),{
+    type:"bar",
+    data:{labels:yL,datasets:[{label:"Tilgung",data:yT,backgroundColor:"#1D9E75"},{label:"Zinsen",data:yZ,backgroundColor:"#E24B4A"}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{stacked:true,ticks:{maxRotation:45,autoSkip:years>15}},y:{stacked:true,ticks:{callback:v=>"€"+v.toLocaleString("de-AT")}}}}
+  });
+};
+
+setTimeout(updateCredit, 300);
+</script>
 <style>
 :root{--bg:#fff;--bg2:#f5f5f0;--bg3:#eeede8;--text:#1a1a18;--text2:#6b6b66;--text3:#9e9e98;--border:rgba(0,0,0,0.12);--border2:rgba(0,0,0,0.25);--radius-md:8px;--radius-lg:12px;--green:#1D9E75;--green-bg:#E1F5EE;--green-text:#085041;--blue:#378ADD;--blue-bg:#E6F1FB;--blue-text:#0C447C;--amber:#BA7517;--amber-bg:#FAEEDA;--amber-text:#633806;--red:#E24B4A;--red-bg:#FCEBEB;--red-text:#A32D2D;--purple:#534AB7;--purple-bg:#EEEDFE;--purple-text:#26215C;}
 @media(prefers-color-scheme:dark){:root{--bg:#1c1c1a;--bg2:#272724;--bg3:#323230;--text:#f0ede8;--text2:#9e9e98;--text3:#6b6b66;--border:rgba(255,255,255,0.12);--border2:rgba(255,255,255,0.25);--green-bg:#085041;--green-text:#9FE1CB;--blue-bg:#0C447C;--blue-text:#B5D4F4;--amber-bg:#633806;--amber-text:#FAC775;--red-bg:#791F1F;--red-text:#F7C1C1;--purple-bg:#26215C;--purple-text:#CECBF6;}}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg3);color:var(--text);min-height:100vh;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg3);color:var(--text);min-height:100vh;}
 .wrapper{max-width:820px;margin:0 auto;padding:1.5rem 1rem;}
 h1{font-size:22px;font-weight:500;margin-bottom:1.5rem;display:flex;align-items:center;gap:10px;}
 .sync-badge{font-size:11px;padding:3px 8px;border-radius:20px;font-weight:500;margin-left:auto;}
@@ -35,8 +321,7 @@ input:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(55,1
 .btn{padding:8px 18px;border-radius:var(--radius-md);cursor:pointer;font-size:14px;font-weight:500;display:inline-flex;align-items:center;gap:6px;border:0.5px solid var(--border2);background:none;color:var(--text);}
 .btn:hover{background:var(--bg2);}
 .btn-primary{background:var(--text);color:var(--bg);border:none;}.btn-primary:hover{opacity:0.85;}
-.btn-sm{padding:4px 10px;font-size:12px;}
-.btn-danger{color:var(--red);}
+.btn-sm{padding:4px 10px;font-size:12px;}.btn-danger{color:var(--red);}
 .row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:0.5px solid var(--border);}
 .row:last-child{border-bottom:none;}
 .row-desc{flex:1;}.row-title{font-size:14px;}.row-meta{font-size:12px;color:var(--text2);}
@@ -67,10 +352,7 @@ input[type=range]{flex:1;accent-color:var(--blue);}
 </head>
 <body>
 <div class="wrapper">
-  <h1>
-    <i class="ti ti-home-2"></i> Haushaltsfinanzen
-    <span class="sync-badge sync-loading" id="sync-badge"><i class="ti ti-refresh"></i> Verbinde...</span>
-  </h1>
+  <h1><i class="ti ti-home-2"></i> Haushaltsfinanzen<span class="sync-badge sync-loading" id="sync-badge"><i class="ti ti-refresh"></i> Verbinde...</span></h1>
   <div class="tabs">
     <button class="tab active" onclick="showTab('uebersicht')"><i class="ti ti-layout-dashboard"></i> Übersicht</button>
     <button class="tab" onclick="showTab('ausgaben')"><i class="ti ti-plus"></i> Ausgabe</button>
@@ -82,9 +364,9 @@ input[type=range]{flex:1;accent-color:var(--blue);}
 
   <div id="tab-uebersicht" class="section active">
     <div class="metric-grid">
-      <div class="metric"><div class="metric-label">Gesamt (alle Zeit)</div><div class="metric-value" id="m-gesamt">€0</div></div>
-      <div class="metric"><div class="metric-label">Diesen Monat</div><div class="metric-value" id="m-monat">€0</div></div>
-      <div class="metric"><div class="metric-label">Fixkosten/Monat</div><div class="metric-value" id="m-fix">€0</div></div>
+      <div class="metric"><div class="metric-label">Gesamt (alle Zeit)</div><div class="metric-value" id="m-gesamt">€0,00</div></div>
+      <div class="metric"><div class="metric-label">Diesen Monat</div><div class="metric-value" id="m-monat">€0,00</div></div>
+      <div class="metric"><div class="metric-label">Fixkosten/Monat</div><div class="metric-value" id="m-fix">€0,00/Mo</div></div>
     </div>
     <div class="card"><div class="section-title">Verteilung nach Person</div><div id="split-bars"></div></div>
     <div class="card"><div class="section-title">Letzte Ausgaben</div><div id="letzte-ausgaben"><div class="empty">Noch keine Ausgaben.</div></div></div>
@@ -147,14 +429,11 @@ input[type=range]{flex:1;accent-color:var(--blue);}
       <button class="btn btn-sm" onclick="changeMonth(1)"><i class="ti ti-chevron-right"></i></button>
     </div>
     <div class="metric-grid">
-      <div class="metric"><div class="metric-label">Gesamt Monat</div><div class="metric-value" id="mo-gesamt">€0</div></div>
-      <div class="metric"><div class="metric-label">Davon Fixkosten</div><div class="metric-value" id="mo-fix">€0</div></div>
-      <div class="metric"><div class="metric-label">Variable Kosten</div><div class="metric-value" id="mo-var">€0</div></div>
+      <div class="metric"><div class="metric-label">Gesamt Monat</div><div class="metric-value" id="mo-gesamt">€0,00</div></div>
+      <div class="metric"><div class="metric-label">Davon Fixkosten</div><div class="metric-value" id="mo-fix">€0,00</div></div>
+      <div class="metric"><div class="metric-label">Variable Kosten</div><div class="metric-value" id="mo-var">€0,00</div></div>
     </div>
-    <div class="card">
-      <div class="section-title">Nach Kategorie</div>
-      <div class="chart-wrap"><canvas id="catChart" role="img" aria-label="Ausgaben nach Kategorie"></canvas></div>
-    </div>
+    <div class="card"><div class="section-title">Nach Kategorie</div><div class="chart-wrap"><canvas id="catChart"></canvas></div></div>
     <div class="card"><div class="section-title">Ausgaben im Monat</div><div id="mo-ausgaben"><div class="empty">Keine Ausgaben.</div></div></div>
   </div>
 
@@ -184,208 +463,9 @@ input[type=range]{flex:1;accent-color:var(--blue);}
     <div class="card">
       <div class="section-title">Tilgungsplan (Jahresübersicht)</div>
       <div class="legend"><span><span class="leg-dot" style="background:#1D9E75"></span>Tilgung</span><span><span class="leg-dot" style="background:#E24B4A"></span>Zinsen</span></div>
-      <div class="chart-wrap"><canvas id="creditChart" role="img" aria-label="Tilgungsplan"></canvas></div>
+      <div class="chart-wrap"><canvas id="creditChart"></canvas></div>
     </div>
   </div>
 </div>
-
-<script>
-const EXPENSES_KEY='haushalt_expenses_v3';
-const FIXED_KEY='haushalt_fixed_v3';
-let expenses=[];
-let fixedCosts=[];
-let nextId=1;
-let nextFixId=1;
-let creditChart=null;
-let catChart=null;
-let currentMonth=new Date();
-
-function setSyncBadge(state){
-  const b=document.getElementById('sync-badge');
-  b.className='sync-badge '+(state==='ok'?'sync-ok':state==='err'?'sync-err':'sync-loading');
-  b.innerHTML=state==='ok'?'<i class="ti ti-cloud-check"></i> Synchronisiert':state==='err'?'<i class="ti ti-cloud-off"></i> Offline':'<i class="ti ti-refresh"></i> Verbinde...';
-}
-
-async function cloudGet(key){try{const r=await window.storage.get(key,true);return r?JSON.parse(r.value):null;}catch(e){return null;}}
-async function cloudSet(key,val){try{await window.storage.set(key,JSON.stringify(val),true);return true;}catch(e){return false;}}
-
-async function loadFromCloud(){
-  setSyncBadge('loading');
-  try{
-    const [e,f]=await Promise.all([cloudGet(EXPENSES_KEY),cloudGet(FIXED_KEY)]);
-    if(e){expenses=e;nextId=e.length?Math.max(...e.map(x=>x.id))+1:1;}
-    if(f){fixedCosts=f;nextFixId=f.length?Math.max(...f.map(x=>x.id))+1:1;}
-    setSyncBadge('ok');
-    applyFixedCosts();
-    render();
-    renderFixedList();
-  }catch(err){setSyncBadge('err');}
-}
-
-async function saveExpenses(){setSyncBadge('loading');const ok=await cloudSet(EXPENSES_KEY,expenses);setSyncBadge(ok?'ok':'err');}
-async function saveFixed(){setSyncBadge('loading');const ok=await cloudSet(FIXED_KEY,fixedCosts);setSyncBadge(ok?'ok':'err');}
-
-function applyFixedCosts(){
-  const now=new Date();
-  const thisMonth=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
-  fixedCosts.forEach(fc=>{
-    const alreadyIn=expenses.some(e=>e.fixedId===fc.id&&e.date.startsWith(thisMonth));
-    if(!alreadyIn){expenses.push({id:nextId++,desc:fc.desc+' (automatisch)',amount:fc.amount,payer:fc.payer,cat:fc.cat,date:thisMonth+'-01',split:fc.split,fixedId:fc.id,auto:true});}
-  });
-}
-
-const today=new Date().toISOString().split('T')[0];
-document.getElementById('in-date').value=today;
-const persons=['ich','mutter','freundin'];
-const pLabels={ich:'Ich',mutter:'Mutter',freundin:'Freundin'};
-const pColors={ich:'#378ADD',mutter:'#1D9E75',freundin:'#BA7517'};
-const catLabels={haushalt:'Haushalt',umbau:'Umbau',lebensmittel:'Lebensmittel',nebenkosten:'Nebenkosten',versicherung:'Versicherung',sonstiges:'Sonstiges'};
-const catColors=['#378ADD','#1D9E75','#E24B4A','#BA7517','#534AB7','#888780'];
-const monthNames=['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'];
-
-function fmt(n){return '€'+n.toLocaleString('de-AT',{minimumFractionDigits:2,maximumFractionDigits:2});}
-function fmtM(d){return monthNames[d.getMonth()]+' '+d.getFullYear();}
-function yymm(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
-
-function showTab(t){
-  const keys=['uebersicht','ausgaben','fixkosten','monat','abrechnung','kredit'];
-  document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('active',keys[i]===t));
-  document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
-  document.getElementById('tab-'+t).classList.add('active');
-  if(t==='kredit')setTimeout(updateCredit,50);
-  if(t==='monat')renderMonth();
-  render();
-}
-
-async function addExpense(){
-  const desc=document.getElementById('in-desc').value.trim();
-  const amount=parseFloat(document.getElementById('in-amount').value);
-  const payer=document.getElementById('in-payer').value;
-  const cat=document.getElementById('in-cat').value;
-  const date=document.getElementById('in-date').value;
-  const split=persons.filter(p=>document.getElementById('split-'+p).checked);
-  if(!desc||isNaN(amount)||amount<=0||split.length===0){alert('Bitte alle Felder ausfüllen!');return;}
-  expenses.push({id:nextId++,desc,amount,payer,cat,date,split});
-  document.getElementById('in-desc').value='';document.getElementById('in-amount').value='';document.getElementById('in-date').value=today;
-  await saveExpenses();render();showTab('uebersicht');
-}
-
-async function deleteExpense(id){
-  if(!confirm('Ausgabe wirklich löschen?'))return;
-  expenses=expenses.filter(e=>e.id!==id);
-  await saveExpenses();render();
-}
-
-async function addFixed(){
-  const desc=document.getElementById('fix-desc').value.trim();
-  const amount=parseFloat(document.getElementById('fix-amount').value);
-  const payer=document.getElementById('fix-payer').value;
-  const cat=document.getElementById('fix-cat').value;
-  const split=persons.filter(p=>document.getElementById('fsplit-'+p).checked);
-  if(!desc||isNaN(amount)||amount<=0||split.length===0){alert('Bitte alle Felder ausfüllen!');return;}
-  fixedCosts.push({id:nextFixId++,desc,amount,payer,cat,split});
-  document.getElementById('fix-desc').value='';document.getElementById('fix-amount').value='';
-  applyFixedCosts();
-  await Promise.all([saveFixed(),saveExpenses()]);
-  renderFixedList();render();
-}
-
-async function deleteFixed(id){
-  if(!confirm('Fixkosten löschen? Bereits eingetragene Ausgaben bleiben erhalten.'))return;
-  fixedCosts=fixedCosts.filter(f=>f.id!==id);
-  await saveFixed();renderFixedList();render();
-}
-
-function renderFixedList(){
-  const el=document.getElementById('fix-list');
-  if(!fixedCosts.length){el.innerHTML='<div class="empty">Keine Fixkosten eingetragen.</div>';return;}
-  const totalFix=fixedCosts.reduce((s,f)=>s+f.amount,0);
-  el.innerHTML=fixedCosts.map(f=>`<div class="row">
-    <div class="row-desc"><div class="row-title">${f.desc} <span class="tag-fix">monatlich</span></div><div class="row-meta">${f.cat} · ${f.split.map(p=>pLabels[p]).join(', ')} (je ${fmt(f.amount/f.split.length)})</div></div>
-    <span class="badge badge-${f.payer}">${pLabels[f.payer]}</span>
-    <div class="row-amount">${fmt(f.amount)}</div>
-    <button class="btn btn-sm btn-danger" onclick="deleteFixed(${f.id})"><i class="ti ti-trash"></i></button>
-  </div>`).join('')
-  +`<div style="display:flex;justify-content:flex-end;padding-top:10px;font-weight:500;font-size:14px">Gesamt: ${fmt(totalFix)}/Monat</div>`;
-}
-
-function changeMonth(dir){currentMonth=new Date(currentMonth.getFullYear(),currentMonth.getMonth()+dir,1);renderMonth();}
-
-function renderMonth(){
-  document.getElementById('month-title').textContent=fmtM(currentMonth);
-  const key=yymm(currentMonth);
-  const moExp=expenses.filter(e=>e.date.startsWith(key));
-  const moTotal=moExp.reduce((s,e)=>s+e.amount,0);
-  const moFix=moExp.filter(e=>e.auto).reduce((s,e)=>s+e.amount,0);
-  document.getElementById('mo-gesamt').textContent=fmt(moTotal);
-  document.getElementById('mo-fix').textContent=fmt(moFix);
-  document.getElementById('mo-var').textContent=fmt(moTotal-moFix);
-  const catTotals={};
-  moExp.forEach(e=>{catTotals[e.cat]=(catTotals[e.cat]||0)+e.amount;});
-  const cats=Object.keys(catTotals);
-  if(catChart)catChart.destroy();
-  if(cats.length){
-    catChart=new Chart(document.getElementById('catChart'),{type:'doughnut',data:{labels:cats.map(c=>catLabels[c]||c),datasets:[{data:cats.map(c=>Math.round(catTotals[c]*100)/100),backgroundColor:catColors}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right'}}}});
-  }
-  document.getElementById('mo-ausgaben').innerHTML=moExp.length
-    ?[...moExp].reverse().map(e=>`<div class="row"><div class="row-desc"><div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':''}</div><div class="row-meta">${e.date} · ${e.cat} · ${e.split.map(p=>pLabels[p]).join(', ')} (je ${fmt(e.amount/e.split.length)})</div></div><span class="badge badge-${e.payer}">${pLabels[e.payer]}</span><div class="row-amount">${fmt(e.amount)}</div></div>`).join('')
-    :'<div class="empty">Keine Ausgaben in diesem Monat.</div>';
-}
-
-function render(){
-  const total=expenses.reduce((s,e)=>s+e.amount,0);
-  const key=yymm(new Date());
-  const moTotal=expenses.filter(e=>e.date.startsWith(key)).reduce((s,e)=>s+e.amount,0);
-  const fixTotal=fixedCosts.reduce((s,f)=>s+f.amount,0);
-  document.getElementById('m-gesamt').textContent=fmt(total);
-  document.getElementById('m-monat').textContent=fmt(moTotal);
-  document.getElementById('m-fix').textContent=fmt(fixTotal)+'/Mo';
-  const paid={},owes={};
-  persons.forEach(p=>{paid[p]=0;owes[p]=0;});
-  expenses.forEach(e=>{paid[e.payer]+=e.amount;const sh=e.amount/e.split.length;e.split.forEach(p=>owes[p]+=sh);});
-  document.getElementById('split-bars').innerHTML=persons.map(p=>{
-    const pct=total>0?Math.round(paid[p]/total*100):0;
-    return `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:14px">${pLabels[p]}</span><span style="font-size:13px;color:var(--text2)">${fmt(paid[p])} bezahlt · ${fmt(owes[p])} Anteil</span></div><div style="background:var(--bg2);height:8px;border-radius:4px;overflow:hidden"><div style="width:${pct}%;height:100%;background:${pColors[p]};border-radius:4px"></div></div></div>`;
-  }).join('');
-  const last=[...expenses].reverse().slice(0,5);
-  document.getElementById('letzte-ausgaben').innerHTML=last.length?last.map(e=>`<div class="row"><div class="row-desc"><div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':''}</div><div class="row-meta">${e.date} · ${e.cat}</div></div><span class="badge badge-${e.payer}">${pLabels[e.payer]}</span><div class="row-amount">${fmt(e.amount)}</div></div>`).join(''):'<div class="empty">Noch keine Ausgaben.</div>';
-  document.getElementById('alle-ausgaben').innerHTML=expenses.length?[...expenses].reverse().map(e=>`<div class="row"><div class="row-desc"><div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':''}</div><div class="row-meta">${e.date} · ${e.cat} · ${e.split.map(p=>pLabels[p]).join(', ')} (je ${fmt(e.amount/e.split.length)})</div></div><span class="badge badge-${e.payer}">${pLabels[e.payer]}</span><div class="row-amount">${fmt(e.amount)}</div>${!e.auto?`<button class="btn btn-sm btn-danger" onclick="deleteExpense(${e.id})"><i class="ti ti-trash"></i></button>`:''}</div>`).join(''):'<div class="empty">Noch keine Ausgaben.</div>';
-  document.getElementById('balance-body').innerHTML=persons.map(p=>{const bal=paid[p]-owes[p];return `<tr><td><span class="badge badge-${p}">${pLabels[p]}</span></td><td>${fmt(paid[p])}</td><td>${fmt(owes[p])}</td><td class="${bal>=0?'positive':'negative'}">${bal>=0?'+':''}${fmt(bal)}</td></tr>`;}).join('');
-  const b={};persons.forEach(p=>b[p]=paid[p]-owes[p]);
-  const transfers=[];
-  for(let i=0;i<10;i++){
-    const debtor=persons.reduce((a,c)=>b[c]<b[a]?c:a,persons[0]);
-    const creditor=persons.reduce((a,c)=>b[c]>b[a]?c:a,persons[0]);
-    if(Math.abs(b[debtor])<0.01)break;
-    const amt=Math.min(-b[debtor],b[creditor]);
-    if(amt<0.01)break;
-    transfers.push({from:debtor,to:creditor,amt});b[debtor]+=amt;b[creditor]-=amt;
-  }
-  document.getElementById('settlements').innerHTML=transfers.length?transfers.map(t=>`<div class="row"><span class="badge badge-${t.from}">${pLabels[t.from]}</span><i class="ti ti-arrow-right" style="color:var(--text3)"></i><span class="badge badge-${t.to}">${pLabels[t.to]}</span><span style="margin-left:auto;font-weight:500">${fmt(t.amt)}</span></div>`).join(''):'<div class="empty" style="padding:1rem">Alle Zahlungen sind ausgeglichen ✓</div>';
-}
-
-function updateCredit(){
-  const P=parseFloat(document.getElementById('sl-betrag').value);
-  const r=parseFloat(document.getElementById('sl-zins').value)/100/12;
-  const n=parseInt(document.getElementById('sl-jahre').value)*12;
-  document.getElementById('out-betrag').textContent='€'+P.toLocaleString('de-AT');
-  document.getElementById('out-zins').textContent=parseFloat(document.getElementById('sl-zins').value).toFixed(1).replace('.',',')+' %';
-  document.getElementById('out-jahre').textContent=document.getElementById('sl-jahre').value+' Jahre';
-  const monthly=r===0?P/n:P*r*Math.pow(1+r,n)/(Math.pow(1+r,n)-1);
-  document.getElementById('cr-rate').textContent=fmt(monthly);
-  document.getElementById('cr-gesamt').textContent=fmt(monthly*n);
-  document.getElementById('cr-zinsen').textContent=fmt(monthly*n-P);
-  const years=parseInt(document.getElementById('sl-jahre').value);
-  const yL=[],yT=[],yZ=[];let rem=P;
-  for(let y=1;y<=years;y++){let yi=0,yt=0;for(let m=0;m<12;m++){const ip=rem*r;yi+=ip;yt+=monthly-ip;rem-=(monthly-ip);}yL.push('J'+y);yZ.push(Math.round(yi));yT.push(Math.round(yt));}
-  if(creditChart)creditChart.destroy();
-  creditChart=new Chart(document.getElementById('creditChart'),{type:'bar',data:{labels:yL,datasets:[{label:'Tilgung',data:yT,backgroundColor:'#1D9E75'},{label:'Zinsen',data:yZ,backgroundColor:'#E24B4A'}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{stacked:true,ticks:{maxRotation:45,autoSkip:years>15}},y:{stacked:true,ticks:{callback:v=>'€'+v.toLocaleString('de-AT')}}}}});
-}
-
-document.getElementById('month-title').textContent=fmtM(currentMonth);
-loadFromCloud();
-setTimeout(updateCredit,200);
-setInterval(loadFromCloud,30000);
-</script>
 </body>
 </html>
