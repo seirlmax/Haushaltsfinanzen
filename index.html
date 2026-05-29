@@ -374,7 +374,7 @@ setSyncBadge("loading");
 
 db.ref("expenses").on("value", snap => {
   expenses = [];
-  snap.forEach(c => expenses.push({fbKey:c.key, ...c.val()}));
+  snap.forEach(function(c){ var v=c.val(); if(v) expenses.push(Object.assign({fbKey:c.key},v)); });
   setSyncBadge("ok");
   applyFixedCosts();
   render();
@@ -382,20 +382,24 @@ db.ref("expenses").on("value", snap => {
 
 db.ref("fixedCosts").on("value", snap => {
   fixedCosts = [];
-  snap.forEach(c => fixedCosts.push({fbKey:c.key, ...c.val()}));
+  snap.forEach(function(c){ var v=c.val(); if(v) fixedCosts.push(Object.assign({fbKey:c.key},v)); });
   renderFixedList();
   render();
 }, () => setSyncBadge("err"));
 
 db.ref("hausbau").on("value", snap => {
   hausbauItems = [];
-  snap.forEach(c => hausbauItems.push({fbKey:c.key, ...c.val()}));
+  snap.forEach(function(c) {
+    var val = c.val();
+    if(val) hausbauItems.push(Object.assign({fbKey: c.key}, val));
+  });
+  console.log("hausbauItems loaded:", hausbauItems.length, hausbauItems.map(function(i){return i.desc;}));
   renderHausbau();
 }, () => setSyncBadge("err"));
 
 db.ref("gantt").on("value", snap => {
   ganttItems = [];
-  snap.forEach(c => ganttItems.push({fbKey:c.key, ...c.val()}));
+  snap.forEach(function(c){ var v=c.val(); if(v) ganttItems.push(Object.assign({fbKey:c.key},v)); });
   renderGantt();
 }, () => setSyncBadge("err"));
 
@@ -464,7 +468,7 @@ function renderFixedList() {
       </div>
       <span class="badge badge-${f.payer}">${pLabels[f.payer]}</span>
       <div class="row-amount">${fmt(f.amount)}</div>
-      <button class="btn btn-sm btn-danger" onclick="deleteFixed('${f.fbKey}')"><i class="ti ti-trash"></i></button>
+      <button class="btn btn-sm btn-danger" data-key="${f.fbKey}" onclick="deleteFixed(this.dataset.key)"><i class="ti ti-trash"></i></button>
     </div>`).join("")
     +`<div style="display:flex;justify-content:flex-end;padding-top:10px;font-weight:500;font-size:14px">Gesamt: ${fmt(total)}/Monat</div>`;
 }
@@ -549,7 +553,7 @@ function renderHausbau() {
   let items = [...hausbauItems];
   if(filterCat!=="alle")    items = items.filter(i=>i.cat===filterCat);
   if(filterStatus!=="alle") items = items.filter(i=>i.status===filterStatus);
-  items.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  items.sort(function(a,b){ return (b.date||"").localeCompare(a.date||""); });
   const total   = hausbauItems.reduce((s,i)=>s+i.amount,0);
   const bezahlt = hausbauItems.filter(i=>i.status==="bezahlt").reduce((s,i)=>s+i.amount,0);
   const offen   = hausbauItems.filter(i=>i.status==="offen"||i.status==="ausstehend").reduce((s,i)=>s+i.amount,0);
@@ -559,27 +563,37 @@ function renderHausbau() {
   if(!items.length){el.innerHTML='<div class="empty">Keine Einträge.</div>';return;}
   const statusBg={offen:"var(--amber-bg)",bezahlt:"var(--green-bg)",ausstehend:"var(--blue-bg)",storniert:"var(--red-bg)"};
   const statusFg={offen:"var(--amber-text)",bezahlt:"var(--green-text)",ausstehend:"var(--blue-text)",storniert:"var(--red-text)"};
-  el.innerHTML = items.map(function(i) {
-    var bg = i.payer==="ich"?"var(--blue-bg)":i.payer==="mutter"?"var(--green-bg)":"var(--amber-bg)";
-    var fg = i.payer==="ich"?"var(--blue-text)":i.payer==="mutter"?"var(--green-text)":"var(--amber-text)";
-    var payerBadge = i.payer ? "<span class=\"badge\" style=\"background:"+bg+";color:"+fg+"\">"+(pLabels[i.payer]||i.payer)+"</span>" : "";
-    var sbg = statusBg[i.status]||"var(--bg2)";
-    var sfg = statusFg[i.status]||"var(--text2)";
-    var selOpts = ["offen","ausstehend","bezahlt","storniert"].map(function(v){
-      return "<option value=\""+v+"\"" + (i.status===v?" selected":"") + ">"+ {offen:"Offen",ausstehend:"Ausstehend",bezahlt:"Bezahlt",storniert:"Storniert"}[v] +"</option>";
-    }).join("");
-    return "<div class=\"row\" style=\"flex-wrap:wrap;gap:8px;padding:12px 0\">"
-      +"<div class=\"row-desc\">"
-      +"<div class=\"row-title\" style=\"font-weight:500\">"+i.desc+"</div>"
-      +"<div class=\"row-meta\">"+(i.date||"")+(i.firma?" · "+i.firma:"")+" · "+(hbCatLabels[i.cat]||i.cat)+"</div>"
-      +"</div>"
-      +"<div style=\"display:flex;align-items:center;gap:8px;flex-wrap:wrap\">"
-      +payerBadge
-      +"<select onchange=\"updateHausbauStatus('"+i.fbKey+"',this.value)\" style=\"font-size:12px;padding:3px 8px;border-radius:20px;border:none;background:"+sbg+";color:"+sfg+";cursor:pointer;width:auto\">"+selOpts+"</select>"
-      +"<div class=\"row-amount\">"+fmt(i.amount)+"</div>"
-      +"<button class=\"btn btn-sm btn-danger\" onclick=\"deleteHausbau('"+i.fbKey+"')\"><i class=\"ti ti-trash\"></i></button>"
-      +"</div></div>";
-  }).join("");
+  var rows = [];
+  for(var ii=0; ii<items.length; ii++) {
+    try {
+      var i = items[ii];
+      var bg = i.payer==="ich"?"var(--blue-bg)":i.payer==="mutter"?"var(--green-bg)":"var(--amber-bg)";
+      var fg = i.payer==="ich"?"var(--blue-text)":i.payer==="mutter"?"var(--green-text)":"var(--amber-text)";
+      var payerBadge = i.payer ? "<span class=\"badge\" style=\"background:"+bg+";color:"+fg+"\">"+(pLabels[i.payer]||i.payer)+"</span>" : "";
+      var sbg = statusBg[i.status]||"var(--bg2)";
+      var sfg = statusFg[i.status]||"var(--text2)";
+      var statusNames = {offen:"Offen",ausstehend:"Ausstehend",bezahlt:"Bezahlt",storniert:"Storniert"};
+      var selOpts = ["offen","ausstehend","bezahlt","storniert"].map(function(v){
+        return "<option value=\""+v+"\"" + (i.status===v?" selected":"") + ">"+statusNames[v]+"</option>";
+      }).join("");
+      var row = "<div class=\"row\" style=\"flex-wrap:wrap;gap:8px;padding:12px 0\">"
+        +"<div class=\"row-desc\">"
+        +"<div class=\"row-title\" style=\"font-weight:500\">"+(i.desc||"")+"</div>"
+        +"<div class=\"row-meta\">"+(i.date||"")+(i.firma?" · "+i.firma:"")+" · "+(hbCatLabels[i.cat]||i.cat||"")+"</div>"
+        +"</div>"
+        +"<div style=\"display:flex;align-items:center;gap:8px;flex-wrap:wrap\">"
+        +payerBadge
+        +"<select data-key=\""+i.fbKey+"\" onchange=\"updateHausbauStatus(this.dataset.key,this.value)\" style=\"font-size:12px;padding:3px 8px;border-radius:20px;border:none;background:"+sbg+";color:"+sfg+";cursor:pointer;width:auto\">"+selOpts+"</select>"
+        +"<div class=\"row-amount\">"+fmt(i.amount)+"</div>"
+        +"<button class=\"btn btn-sm btn-danger\" data-key=\""+i.fbKey+"\" onclick=\"deleteHausbau(this.dataset.key)\"><i class=\"ti ti-trash\"></i></button>"
+        +"</div></div>";
+      rows.push(row);
+    } catch(err) {
+      console.error("Error rendering hausbau item", ii, err);
+      rows.push("<div class=\"row\"><div class=\"row-desc\"><div class=\"row-title\">Fehler bei Eintrag "+ii+"</div></div></div>");
+    }
+  }
+  el.innerHTML = rows.join("");
 }
 
 // ── GANTT ─────────────────────────────────────────────────────────────────
@@ -777,7 +791,7 @@ function render() {
       </div>
       <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
       <div class="row-amount">${fmt(e.amount)}</div>
-      ${!e.auto?`<button class="btn btn-sm btn-danger" onclick="deleteExpense('${e.fbKey}')"><i class="ti ti-trash"></i></button>`:""}
+      ${!e.auto?'<button class="btn btn-sm btn-danger" data-key="'+e.fbKey+'" onclick="deleteExpense(this.dataset.key)"><i class="ti ti-trash"></i></button>':""}
     </div>`).join("") || '<div class="empty">Noch keine Ausgaben.</div>';
   const bb=document.getElementById("balance-body");
   if(bb) bb.innerHTML=persons.map(p=>{
