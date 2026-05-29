@@ -559,25 +559,27 @@ function renderHausbau() {
   if(!items.length){el.innerHTML='<div class="empty">Keine Einträge.</div>';return;}
   const statusBg={offen:"var(--amber-bg)",bezahlt:"var(--green-bg)",ausstehend:"var(--blue-bg)",storniert:"var(--red-bg)"};
   const statusFg={offen:"var(--amber-text)",bezahlt:"var(--green-text)",ausstehend:"var(--blue-text)",storniert:"var(--red-text)"};
-  el.innerHTML = items.map(i=>`
-    <div class="row" style="flex-wrap:wrap;gap:8px;padding:12px 0">
-      <div class="row-desc">
-        <div class="row-title" style="font-weight:500">${i.desc}</div>
-        <div class="row-meta">${i.date||""} ${i.firma?"· "+i.firma:""} · ${hbCatLabels[i.cat]||i.cat}</div>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        ${i.payer?`<span class="badge badge-${i.payer}">${pLabels[i.payer]||i.payer}</span>`:""}
-        <select onchange="updateHausbauStatus('${i.fbKey}',this.value)"
-          style="font-size:12px;padding:3px 8px;border-radius:20px;border:none;background:${statusBg[i.status]||"var(--bg2)"};color:${statusFg[i.status]||"var(--text2)"};cursor:pointer;width:auto">
-          <option value="offen"      ${i.status==="offen"?"selected":""}>Offen</option>
-          <option value="ausstehend" ${i.status==="ausstehend"?"selected":""}>Ausstehend</option>
-          <option value="bezahlt"    ${i.status==="bezahlt"?"selected":""}>Bezahlt</option>
-          <option value="storniert"  ${i.status==="storniert"?"selected":""}>Storniert</option>
-        </select>
-        <div class="row-amount">${fmt(i.amount)}</div>
-        <button class="btn btn-sm btn-danger" onclick="deleteHausbau('${i.fbKey}')"><i class="ti ti-trash"></i></button>
-      </div>
-    </div>`).join("");
+  el.innerHTML = items.map(function(i) {
+    var bg = i.payer==="ich"?"var(--blue-bg)":i.payer==="mutter"?"var(--green-bg)":"var(--amber-bg)";
+    var fg = i.payer==="ich"?"var(--blue-text)":i.payer==="mutter"?"var(--green-text)":"var(--amber-text)";
+    var payerBadge = i.payer ? "<span class=\"badge\" style=\"background:"+bg+";color:"+fg+"\">"+(pLabels[i.payer]||i.payer)+"</span>" : "";
+    var sbg = statusBg[i.status]||"var(--bg2)";
+    var sfg = statusFg[i.status]||"var(--text2)";
+    var selOpts = ["offen","ausstehend","bezahlt","storniert"].map(function(v){
+      return "<option value=\""+v+"\"" + (i.status===v?" selected":"") + ">"+ {offen:"Offen",ausstehend:"Ausstehend",bezahlt:"Bezahlt",storniert:"Storniert"}[v] +"</option>";
+    }).join("");
+    return "<div class=\"row\" style=\"flex-wrap:wrap;gap:8px;padding:12px 0\">"
+      +"<div class=\"row-desc\">"
+      +"<div class=\"row-title\" style=\"font-weight:500\">"+i.desc+"</div>"
+      +"<div class=\"row-meta\">"+(i.date||"")+(i.firma?" · "+i.firma:"")+" · "+(hbCatLabels[i.cat]||i.cat)+"</div>"
+      +"</div>"
+      +"<div style=\"display:flex;align-items:center;gap:8px;flex-wrap:wrap\">"
+      +payerBadge
+      +"<select onchange=\"updateHausbauStatus('"+i.fbKey+"',this.value)\" style=\"font-size:12px;padding:3px 8px;border-radius:20px;border:none;background:"+sbg+";color:"+sfg+";cursor:pointer;width:auto\">"+selOpts+"</select>"
+      +"<div class=\"row-amount\">"+fmt(i.amount)+"</div>"
+      +"<button class=\"btn btn-sm btn-danger\" onclick=\"deleteHausbau('"+i.fbKey+"')\"><i class=\"ti ti-trash\"></i></button>"
+      +"</div></div>";
+  }).join("");
 }
 
 // ── GANTT ─────────────────────────────────────────────────────────────────
