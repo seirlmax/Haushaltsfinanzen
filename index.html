@@ -5,376 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Haushaltsfinanzen</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getDatabase, ref, set, onValue, push, remove } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyA8eeUVZYhMOdgj132QUUZOcLRsGaIJJIE",
-  authDomain: "haushaltsfinanzen-f2247.firebaseapp.com",
-  databaseURL: "https://haushaltsfinanzen-f2247-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "haushaltsfinanzen-f2247",
-  storageBucket: "haushaltsfinanzen-f2247.firebasestorage.app",
-  messagingSenderId: "204605029197",
-  appId: "1:204605029197:web:b7cea3cc82a52408511504"
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
-
-function setSyncBadge(state) {
-  const b = document.getElementById("sync-badge");
-  b.className = "sync-badge " + (state === "ok" ? "sync-ok" : state === "err" ? "sync-err" : "sync-loading");
-  b.innerHTML = state === "ok" ? '<i class="ti ti-cloud-check"></i> Synchronisiert'
-    : state === "err" ? '<i class="ti ti-cloud-off"></i> Offline'
-    : '<i class="ti ti-refresh"></i> Verbinde...';
-}
-
-setSyncBadge("loading");
-
-let expenses = [];
-let fixedCosts = [];
-let creditChart = null;
-let catChart = null;
-let currentMonth = new Date();
-
-const persons = ["ich","mutter","freundin"];
-const pLabels = {ich:"Max",mutter:"Gerti",freundin:"Lisa"};
-const pColors = {ich:"#378ADD",mutter:"#1D9E75",freundin:"#BA7517"};
-const catLabels = {haushalt:"Haushalt",umbau:"Umbau",lebensmittel:"Lebensmittel",nebenkosten:"Nebenkosten",versicherung:"Versicherung",sonstiges:"Sonstiges"};
-const catColors = ["#378ADD","#1D9E75","#E24B4A","#BA7517","#534AB7","#888780"];
-const monthNames = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
-
-function fmt(n) { return "€"+n.toLocaleString("de-AT",{minimumFractionDigits:2,maximumFractionDigits:2}); }
-function fmtM(d) { return monthNames[d.getMonth()]+" "+d.getFullYear(); }
-function yymm(d) { return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
-const today = new Date().toISOString().split("T")[0];
-document.getElementById("in-date").value = today;
-document.getElementById("month-title").textContent = fmtM(currentMonth);
-document.getElementById("hb-date").value = today;
-
-// Listen to Firebase
-onValue(ref(db, "expenses"), (snap) => {
-  expenses = [];
-  snap.forEach(child => expenses.push({fbKey: child.key, ...child.val()}));
-  setSyncBadge("ok");
-  applyFixedCosts();
-  render();
-}, (err) => setSyncBadge("err"));
-
-onValue(ref(db, "fixedCosts"), (snap) => {
-  fixedCosts = [];
-  snap.forEach(child => fixedCosts.push({fbKey: child.key, ...child.val()}));
-  renderFixedList();
-  render();
-}, (err) => setSyncBadge("err"));
-
-function applyFixedCosts() {
-  const now = new Date();
-  const thisMonth = now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
-  fixedCosts.forEach(fc => {
-    const alreadyIn = expenses.some(e => e.fixedId === fc.fbKey && e.date.startsWith(thisMonth));
-    if (!alreadyIn) {
-      push(ref(db, "expenses"), {
-        desc: fc.desc+" (automatisch)",
-        amount: fc.amount,
-        payer: fc.payer,
-        cat: fc.cat,
-        date: thisMonth+"-01",
-        split: fc.split,
-        fixedId: fc.fbKey,
-        auto: true
-      });
-    }
-  });
-}
-
-window.showTab = function(t) {
-  const keys = ["uebersicht","ausgaben","fixkosten","monat","abrechnung","kredit","hausbau"];
-  document.querySelectorAll(".tab").forEach((b,i) => b.classList.toggle("active", keys[i]===t));
-  document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
-  document.getElementById("tab-"+t).classList.add("active");
-  if(t==="kredit") setTimeout(updateCredit,50);
-  if(t==="monat") renderMonth();
-  render();
-};
-
-window.addExpense = function() {
-  const desc = document.getElementById("in-desc").value.trim();
-  const amount = parseFloat(document.getElementById("in-amount").value);
-  const payer = document.getElementById("in-payer").value;
-  const cat = document.getElementById("in-cat").value;
-  const date = document.getElementById("in-date").value;
-  const split = persons.filter(p => document.getElementById("split-"+p).checked);
-  if(!desc||isNaN(amount)||amount<=0||split.length===0){alert("Bitte alle Felder ausfüllen!");return;}
-  push(ref(db,"expenses"),{desc,amount,payer,cat,date,split,auto:false});
-  document.getElementById("in-desc").value="";
-  document.getElementById("in-amount").value="";
-  document.getElementById("in-date").value=today;
-  window.showTab("uebersicht");
-};
-
-window.deleteExpense = function(fbKey) {
-  if(!confirm("Ausgabe wirklich löschen?"))return;
-  remove(ref(db,"expenses/"+fbKey));
-};
-
-window.addFixed = function() {
-  const desc = document.getElementById("fix-desc").value.trim();
-  const amount = parseFloat(document.getElementById("fix-amount").value);
-  const payer = document.getElementById("fix-payer").value;
-  const cat = document.getElementById("fix-cat").value;
-  const split = persons.filter(p => document.getElementById("fsplit-"+p).checked);
-  if(!desc||isNaN(amount)||amount<=0||split.length===0){alert("Bitte alle Felder ausfüllen!");return;}
-  push(ref(db,"fixedCosts"),{desc,amount,payer,cat,split});
-  document.getElementById("fix-desc").value="";
-  document.getElementById("fix-amount").value="";
-};
-
-window.deleteFixed = function(fbKey) {
-  if(!confirm("Fixkosten löschen? Bereits eingetragene Ausgaben bleiben erhalten."))return;
-  remove(ref(db,"fixedCosts/"+fbKey));
-};
-
-function renderFixedList() {
-  const el = document.getElementById("fix-list");
-  if(!fixedCosts.length){el.innerHTML='<div class="empty">Keine Fixkosten eingetragen.</div>';return;}
-  const totalFix = fixedCosts.reduce((s,f)=>s+f.amount,0);
-  el.innerHTML = fixedCosts.map(f=>`
-    <div class="row">
-      <div class="row-desc">
-        <div class="row-title">${f.desc} <span class="tag-fix">monatlich</span></div>
-        <div class="row-meta">${f.cat} · ${f.split.map(p=>pLabels[p]).join(", ")} (je ${fmt(f.amount/f.split.length)})</div>
-      </div>
-      <span class="badge badge-${f.payer}">${pLabels[f.payer]}</span>
-      <div class="row-amount">${fmt(f.amount)}</div>
-      <button class="btn btn-sm btn-danger" onclick="deleteFixed('${f.fbKey}')"><i class="ti ti-trash"></i></button>
-    </div>`).join("")
-    +`<div style="display:flex;justify-content:flex-end;padding-top:10px;font-weight:500;font-size:14px">Gesamt: ${fmt(totalFix)}/Monat</div>`;
-}
-
-window.changeMonth = function(dir) {
-  currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth()+dir, 1);
-  renderMonth();
-};
-
-function renderMonth() {
-  document.getElementById("month-title").textContent = fmtM(currentMonth);
-document.getElementById("hb-date").value = today;
-  const key = yymm(currentMonth);
-  const moExp = expenses.filter(e=>e.date.startsWith(key));
-  const moTotal = moExp.reduce((s,e)=>s+e.amount,0);
-  const moFix = moExp.filter(e=>e.auto).reduce((s,e)=>s+e.amount,0);
-  document.getElementById("mo-gesamt").textContent = fmt(moTotal);
-  document.getElementById("mo-fix").textContent = fmt(moFix);
-  document.getElementById("mo-var").textContent = fmt(moTotal-moFix);
-  const catTotals = {};
-  moExp.forEach(e=>{catTotals[e.cat]=(catTotals[e.cat]||0)+e.amount;});
-  const cats = Object.keys(catTotals);
-  if(catChart)catChart.destroy();
-  if(cats.length){
-    catChart = new Chart(document.getElementById("catChart"),{
-      type:"doughnut",
-      data:{labels:cats.map(c=>catLabels[c]||c),datasets:[{data:cats.map(c=>Math.round(catTotals[c]*100)/100),backgroundColor:catColors}]},
-      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"right"}}}
-    });
-  }
-  document.getElementById("mo-ausgaben").innerHTML = moExp.length
-    ? [...moExp].reverse().map(e=>`<div class="row">
-        <div class="row-desc">
-          <div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':""}</div>
-          <div class="row-meta">${e.date} · ${e.cat} · ${e.split.map(p=>pLabels[p]).join(", ")} (je ${fmt(e.amount/e.split.length)})</div>
-        </div>
-        <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
-        <div class="row-amount">${fmt(e.amount)}</div>
-      </div>`).join("")
-    : '<div class="empty">Keine Ausgaben in diesem Monat.</div>';
-}
-
-function render() {
-  const total = expenses.reduce((s,e)=>s+e.amount,0);
-  const key = yymm(new Date());
-  const moTotal = expenses.filter(e=>e.date.startsWith(key)).reduce((s,e)=>s+e.amount,0);
-  const fixTotal = fixedCosts.reduce((s,f)=>s+f.amount,0);
-  document.getElementById("m-gesamt").textContent = fmt(total);
-  document.getElementById("m-monat").textContent = fmt(moTotal);
-  document.getElementById("m-fix").textContent = fmt(fixTotal)+"/Mo";
-  const paid={},owes={};
-  persons.forEach(p=>{paid[p]=0;owes[p]=0;});
-  expenses.forEach(e=>{
-    paid[e.payer]+=e.amount;
-    const sh=e.amount/e.split.length;
-    e.split.forEach(p=>owes[p]+=sh);
-  });
-  document.getElementById("split-bars").innerHTML = persons.map(p=>{
-    const pct=total>0?Math.round(paid[p]/total*100):0;
-    return `<div style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-        <span style="font-size:14px">${pLabels[p]}</span>
-        <span style="font-size:13px;color:var(--text2)">${fmt(paid[p])} bezahlt · ${fmt(owes[p])} Anteil</span>
-      </div>
-      <div style="background:var(--bg2);height:8px;border-radius:4px;overflow:hidden">
-        <div style="width:${pct}%;height:100%;background:${pColors[p]};border-radius:4px"></div>
-      </div></div>`;
-  }).join("");
-  const last = [...expenses].reverse().slice(0,5);
-  document.getElementById("letzte-ausgaben").innerHTML = last.length
-    ? last.map(e=>`<div class="row">
-        <div class="row-desc">
-          <div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':""}</div>
-          <div class="row-meta">${e.date} · ${e.cat}</div>
-        </div>
-        <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
-        <div class="row-amount">${fmt(e.amount)}</div>
-      </div>`).join("")
-    : '<div class="empty">Noch keine Ausgaben.</div>';
-  document.getElementById("alle-ausgaben").innerHTML = expenses.length
-    ? [...expenses].reverse().map(e=>`<div class="row">
-        <div class="row-desc">
-          <div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':""}</div>
-          <div class="row-meta">${e.date} · ${e.cat} · ${e.split.map(p=>pLabels[p]).join(", ")} (je ${fmt(e.amount/e.split.length)})</div>
-        </div>
-        <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
-        <div class="row-amount">${fmt(e.amount)}</div>
-        ${!e.auto?`<button class="btn btn-sm btn-danger" onclick="deleteExpense('${e.fbKey}')"><i class="ti ti-trash"></i></button>`:""}
-      </div>`).join("")
-    : '<div class="empty">Noch keine Ausgaben.</div>';
-  document.getElementById("balance-body").innerHTML = persons.map(p=>{
-    const bal=paid[p]-owes[p];
-    return `<tr><td><span class="badge badge-${p}">${pLabels[p]}</span></td><td>${fmt(paid[p])}</td><td>${fmt(owes[p])}</td><td class="${bal>=0?"positive":"negative"}">${bal>=0?"+":""}${fmt(bal)}</td></tr>`;
-  }).join("");
-  const b={};persons.forEach(p=>b[p]=paid[p]-owes[p]);
-  const transfers=[];
-  for(let i=0;i<10;i++){
-    const debtor=persons.reduce((a,c)=>b[c]<b[a]?c:a,persons[0]);
-    const creditor=persons.reduce((a,c)=>b[c]>b[a]?c:a,persons[0]);
-    if(Math.abs(b[debtor])<0.01)break;
-    const amt=Math.min(-b[debtor],b[creditor]);
-    if(amt<0.01)break;
-    transfers.push({from:debtor,to:creditor,amt});
-    b[debtor]+=amt;b[creditor]-=amt;
-  }
-  document.getElementById("settlements").innerHTML = transfers.length
-    ? transfers.map(t=>`<div class="row">
-        <span class="badge badge-${t.from}">${pLabels[t.from]}</span>
-        <i class="ti ti-arrow-right" style="color:var(--text3)"></i>
-        <span class="badge badge-${t.to}">${pLabels[t.to]}</span>
-        <span style="margin-left:auto;font-weight:500">${fmt(t.amt)}</span>
-      </div>`).join("")
-    : '<div class="empty" style="padding:1rem">Alle Zahlungen sind ausgeglichen ✓</div>';
-}
-
-window.updateCredit = function() {
-  const P=parseFloat(document.getElementById("sl-betrag").value);
-  const r=parseFloat(document.getElementById("sl-zins").value)/100/12;
-  const n=parseInt(document.getElementById("sl-jahre").value)*12;
-  document.getElementById("out-betrag").textContent="€"+P.toLocaleString("de-AT");
-  document.getElementById("out-zins").textContent=parseFloat(document.getElementById("sl-zins").value).toFixed(1).replace(".",",")+"%";
-  document.getElementById("out-jahre").textContent=document.getElementById("sl-jahre").value+" Jahre";
-  const monthly=r===0?P/n:P*r*Math.pow(1+r,n)/(Math.pow(1+r,n)-1);
-  document.getElementById("cr-rate").textContent=fmt(monthly);
-  document.getElementById("cr-gesamt").textContent=fmt(monthly*n);
-  document.getElementById("cr-zinsen").textContent=fmt(monthly*n-P);
-  const years=parseInt(document.getElementById("sl-jahre").value);
-  const yL=[],yT=[],yZ=[];let rem=P;
-  for(let y=1;y<=years;y++){
-    let yi=0,yt=0;
-    for(let m=0;m<12;m++){const ip=rem*r;yi+=ip;yt+=monthly-ip;rem-=(monthly-ip);}
-    yL.push("J"+y);yZ.push(Math.round(yi));yT.push(Math.round(yt));
-  }
-  if(creditChart)creditChart.destroy();
-  creditChart=new Chart(document.getElementById("creditChart"),{
-    type:"bar",
-    data:{labels:yL,datasets:[{label:"Tilgung",data:yT,backgroundColor:"#1D9E75"},{label:"Zinsen",data:yZ,backgroundColor:"#E24B4A"}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
-      scales:{x:{stacked:true,ticks:{maxRotation:45,autoSkip:years>15}},y:{stacked:true,ticks:{callback:v=>"€"+v.toLocaleString("de-AT")}}}}
-  });
-};
-
-
-// ── HAUSBAU ──────────────────────────────────────────────────────────────
-let hausbauItems = [];
-
-onValue(ref(db, "hausbau"), (snap) => {
-  hausbauItems = [];
-  snap.forEach(child => hausbauItems.push({fbKey: child.key, ...child.val()}));
-  renderHausbau();
-}, (err) => setSyncBadge("err"));
-
-window.addHausbau = function() {
-  const desc = document.getElementById("hb-desc").value.trim();
-  const amount = parseFloat(document.getElementById("hb-amount").value);
-  const date = document.getElementById("hb-date").value;
-  const firma = document.getElementById("hb-firma").value.trim();
-  const cat = document.getElementById("hb-cat").value;
-  const status = document.getElementById("hb-status").value;
-  if(!desc||isNaN(amount)||amount<=0){alert("Bitte Beschreibung und Betrag ausfüllen!");return;}
-  push(ref(db,"hausbau"),{desc,amount,date,firma,cat,status});
-  document.getElementById("hb-desc").value="";
-  document.getElementById("hb-amount").value="";
-  document.getElementById("hb-firma").value="";
-  document.getElementById("hb-date").value=today;
-};
-
-window.deleteHausbau = function(fbKey) {
-  if(!confirm("Eintrag löschen?"))return;
-  remove(ref(db,"hausbau/"+fbKey));
-};
-
-window.updateHausbauStatus = function(fbKey, status) {
-  const item = hausbauItems.find(i=>i.fbKey===fbKey);
-  if(!item) return;
-  set(ref(db,"hausbau/"+fbKey), {...item, status, fbKey:undefined});
-};
-
-const hbCatLabels = {fundament:"Fundament",rohbau:"Rohbau",dach:"Dach",fenster:"Fenster & Türen",elektro:"Elektro",sanitaer:"Sanitär",heizung:"Heizung",innen:"Innenausbau",fassade:"Fassade",garten:"Garten & Außen",sonstiges:"Sonstiges"};
-const hbStatusColors = {offen:"var(--amber-bg),var(--amber-text)",bezahlt:"var(--green-bg),var(--green-text)",ausstehend:"var(--blue-bg),var(--blue-text)",storniert:"var(--red-bg),var(--red-text)"};
-
-function renderHausbau() {
-  const el = document.getElementById("hb-list");
-  const filterCat = document.getElementById("hb-filter-cat")?.value || "alle";
-  const filterStatus = document.getElementById("hb-filter-status")?.value || "alle";
-  let items = [...hausbauItems];
-  if(filterCat !== "alle") items = items.filter(i=>i.cat===filterCat);
-  if(filterStatus !== "alle") items = items.filter(i=>i.status===filterStatus);
-  items.sort((a,b)=>b.date?.localeCompare(a.date||"")||0);
-
-  const total = hausbauItems.reduce((s,i)=>s+i.amount,0);
-  const bezahlt = hausbauItems.filter(i=>i.status==="bezahlt").reduce((s,i)=>s+i.amount,0);
-  const offen = hausbauItems.filter(i=>i.status==="offen"||i.status==="ausstehend").reduce((s,i)=>s+i.amount,0);
-  document.getElementById("hb-total").textContent = fmt(total);
-  document.getElementById("hb-bezahlt").textContent = fmt(bezahlt);
-  document.getElementById("hb-offen").textContent = fmt(offen);
-
-  if(!items.length){el.innerHTML='<div class="empty">Keine Einträge.</div>';return;}
-  el.innerHTML = items.map(i=>{
-    const sc = (hbStatusColors[i.status]||"var(--bg2),var(--text2)").split(",");
-    const statusLabel = {offen:"Offen",bezahlt:"Bezahlt",ausstehend:"Ausstehend",storniert:"Storniert"}[i.status]||i.status;
-    return `<div class="row" style="align-items:flex-start;flex-wrap:wrap;gap:8px;padding:12px 0">
-      <div class="row-desc">
-        <div class="row-title" style="font-weight:500">${i.desc}</div>
-        <div class="row-meta" style="margin-top:3px">${i.date||""} ${i.firma?'· '+i.firma:""} · ${hbCatLabels[i.cat]||i.cat}</div>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <select onchange="updateHausbauStatus('${i.fbKey}', this.value)" style="font-size:12px;padding:2px 6px;border-radius:20px;border:none;background:${sc[0]};color:${sc[1]};cursor:pointer;width:auto">
-          <option value="offen" ${i.status==="offen"?"selected":""}>Offen</option>
-          <option value="ausstehend" ${i.status==="ausstehend"?"selected":""}>Ausstehend</option>
-          <option value="bezahlt" ${i.status==="bezahlt"?"selected":""}>Bezahlt</option>
-          <option value="storniert" ${i.status==="storniert"?"selected":""}>Storniert</option>
-        </select>
-        <div style="font-weight:500;font-size:15px;min-width:80px;text-align:right">${fmt(i.amount)}</div>
-        <button class="btn btn-sm btn-danger" onclick="deleteHausbau('${i.fbKey}')"><i class="ti ti-trash"></i></button>
-      </div>
-    </div>`;
-  }).join("");
-}
-
-window.applyHausbauFilter = function() { renderHausbau(); };
-
-
-setTimeout(updateCredit, 300);
-</script>
 <style>
 :root{--bg:#fff;--bg2:#f5f5f0;--bg3:#eeede8;--text:#1a1a18;--text2:#6b6b66;--text3:#9e9e98;--border:rgba(0,0,0,0.12);--border2:rgba(0,0,0,0.25);--radius-md:8px;--radius-lg:12px;--green:#1D9E75;--green-bg:#E1F5EE;--green-text:#085041;--blue:#378ADD;--blue-bg:#E6F1FB;--blue-text:#0C447C;--amber:#BA7517;--amber-bg:#FAEEDA;--amber-text:#633806;--red:#E24B4A;--red-bg:#FCEBEB;--red-text:#A32D2D;--purple:#534AB7;--purple-bg:#EEEDFE;--purple-text:#26215C;}
 @media(prefers-color-scheme:dark){:root{--bg:#1c1c1a;--bg2:#272724;--bg3:#323230;--text:#f0ede8;--text2:#9e9e98;--text3:#6b6b66;--border:rgba(255,255,255,0.12);--border2:rgba(255,255,255,0.25);--green-bg:#085041;--green-text:#9FE1CB;--blue-bg:#0C447C;--blue-text:#B5D4F4;--amber-bg:#633806;--amber-text:#FAC775;--red-bg:#791F1F;--red-text:#F7C1C1;--purple-bg:#26215C;--purple-text:#CECBF6;}}
@@ -444,6 +74,7 @@ input[type=range]{flex:1;accent-color:var(--blue);}
     <button class="tab" onclick="showTab('abrechnung')"><i class="ti ti-scale"></i> Abrechnung</button>
     <button class="tab" onclick="showTab('kredit')"><i class="ti ti-building-bank"></i> Kredit</button>
     <button class="tab" onclick="showTab('hausbau')"><i class="ti ti-home-plus"></i> Hausbau</button>
+    <button class="tab" onclick="showTab('gantt')"><i class="ti ti-chart-gantt"></i> Zeitplan</button>
   </div>
 
   <div id="tab-uebersicht" class="section active">
@@ -619,6 +250,542 @@ input[type=range]{flex:1;accent-color:var(--blue);}
     </div>
   </div>
 
+
+  <div id="tab-gantt" class="section">
+    <div class="card">
+      <div class="section-title">Neue Phase / Aufgabe</div>
+      <div class="form-row">
+        <div><label>Bezeichnung</label><input type="text" id="g-name" placeholder="z.B. Rohbau, Elektro installieren" /></div>
+        <div><label>Kategorie</label><select id="g-cat">
+          <option value="fundament">Fundament</option>
+          <option value="rohbau">Rohbau</option>
+          <option value="dach">Dach</option>
+          <option value="fenster">Fenster & Türen</option>
+          <option value="elektro">Elektro</option>
+          <option value="sanitaer">Sanitär</option>
+          <option value="heizung">Heizung</option>
+          <option value="innen">Innenausbau</option>
+          <option value="fassade">Fassade</option>
+          <option value="garten">Garten & Außen</option>
+          <option value="sonstiges">Sonstiges</option>
+        </select></div>
+      </div>
+      <div class="form-row">
+        <div><label>Startdatum</label><input type="date" id="g-start" /></div>
+        <div><label>Enddatum</label><input type="date" id="g-end" /></div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label>Fortschritt: <span id="g-progress-val">0%</span></label>
+          <input type="range" min="0" max="100" step="5" value="0" id="g-progress"
+            oninput="document.getElementById('g-progress-val').textContent=this.value+'%'" style="margin-top:6px">
+        </div>
+        <div><label>Notiz (optional)</label><input type="text" id="g-note" placeholder="z.B. Firma Müller" /></div>
+      </div>
+      <button class="btn btn-primary" onclick="addGanttItem()"><i class="ti ti-plus"></i> Phase hinzufügen</button>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Zeitplan</div>
+      <div style="overflow-x:auto;margin-bottom:1rem">
+        <div id="gantt-chart"><div class="empty">Noch keine Phasen eingetragen.</div></div>
+      </div>
+      <div style="display:flex;gap:16px;font-size:12px;color:var(--text2);margin-bottom:1rem;flex-wrap:wrap">
+        <span style="display:flex;align-items:center;gap:4px"><span style="width:20px;height:3px;background:var(--red);display:inline-block;border-radius:2px"></span> Heute</span>
+        <span>Balkenbreite = Dauer · Füllstand = Fortschritt</span>
+      </div>
+      <div id="gantt-list"></div>
+    </div>
+  </div>
+
 </div>
 </body>
+
+<!-- Load libraries BEFORE app script -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script>
+// ── CONFIG & INIT ─────────────────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyA8eeUVZYhMOdgj132QUUZOcLRsGaIJJIE",
+  authDomain: "haushaltsfinanzen-f2247.firebaseapp.com",
+  databaseURL: "https://haushaltsfinanzen-f2247-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "haushaltsfinanzen-f2247",
+  storageBucket: "haushaltsfinanzen-f2247.firebasestorage.app",
+  messagingSenderId: "204605029197",
+  appId: "1:204605029197:web:b7cea3cc82a52408511504"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// ── STATE ─────────────────────────────────────────────────────────────────
+let expenses    = [];
+let fixedCosts  = [];
+let hausbauItems = [];
+let ganttItems  = [];
+let creditChart = null;
+let catChart    = null;
+let currentMonth = new Date();
+const today = new Date().toISOString().split("T")[0];
+
+const persons    = ["ich","mutter","freundin"];
+const pLabels    = {ich:"Max", mutter:"Gerti", freundin:"Lisa"};
+const pColors    = {ich:"#378ADD", mutter:"#1D9E75", freundin:"#BA7517"};
+const catLabels  = {haushalt:"Haushalt",umbau:"Umbau",lebensmittel:"Lebensmittel",nebenkosten:"Nebenkosten",versicherung:"Versicherung",sonstiges:"Sonstiges"};
+const catColors  = ["#378ADD","#1D9E75","#E24B4A","#BA7517","#534AB7","#888780"];
+const monthNames = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
+const hbCatLabels = {fundament:"Fundament",rohbau:"Rohbau",dach:"Dach",fenster:"Fenster & Türen",elektro:"Elektro",sanitaer:"Sanitär",heizung:"Heizung",innen:"Innenausbau",fassade:"Fassade",garten:"Garten & Außen",sonstiges:"Sonstiges"};
+const ganttColors = ["#378ADD","#1D9E75","#BA7517","#E24B4A","#534AB7","#0EA5A0","#C2610F","#6B7280","#059669","#DC2626"];
+
+// ── HELPERS ───────────────────────────────────────────────────────────────
+function fmt(n)  { return "€"+n.toLocaleString("de-AT",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtM(d) { return monthNames[d.getMonth()]+" "+d.getFullYear(); }
+function yymm(d) { return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
+
+function setSyncBadge(state) {
+  const b = document.getElementById("sync-badge");
+  b.className = "sync-badge "+(state==="ok"?"sync-ok":state==="err"?"sync-err":"sync-loading");
+  b.innerHTML = state==="ok" ? '<i class="ti ti-cloud-check"></i> Synchronisiert'
+    : state==="err"  ? '<i class="ti ti-cloud-off"></i> Offline'
+    : '<i class="ti ti-refresh"></i> Verbinde...';
+}
+
+// ── TABS ──────────────────────────────────────────────────────────────────
+function showTab(t) {
+  const keys = ["uebersicht","ausgaben","fixkosten","monat","abrechnung","kredit","hausbau","gantt"];
+  document.querySelectorAll(".tab").forEach((b,i) => b.classList.toggle("active", keys[i]===t));
+  document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
+  document.getElementById("tab-"+t).classList.add("active");
+  if(t==="kredit") setTimeout(updateCredit,50);
+  if(t==="monat")  renderMonth();
+  render();
+}
+
+// ── FIREBASE LISTENERS ────────────────────────────────────────────────────
+setSyncBadge("loading");
+
+db.ref("expenses").on("value", snap => {
+  expenses = [];
+  snap.forEach(c => expenses.push({fbKey:c.key, ...c.val()}));
+  setSyncBadge("ok");
+  applyFixedCosts();
+  render();
+}, () => setSyncBadge("err"));
+
+db.ref("fixedCosts").on("value", snap => {
+  fixedCosts = [];
+  snap.forEach(c => fixedCosts.push({fbKey:c.key, ...c.val()}));
+  renderFixedList();
+  render();
+}, () => setSyncBadge("err"));
+
+db.ref("hausbau").on("value", snap => {
+  hausbauItems = [];
+  snap.forEach(c => hausbauItems.push({fbKey:c.key, ...c.val()}));
+  renderHausbau();
+}, () => setSyncBadge("err"));
+
+db.ref("gantt").on("value", snap => {
+  ganttItems = [];
+  snap.forEach(c => ganttItems.push({fbKey:c.key, ...c.val()}));
+  renderGantt();
+}, () => setSyncBadge("err"));
+
+// ── AUSGABEN ──────────────────────────────────────────────────────────────
+function addExpense() {
+  const desc   = document.getElementById("in-desc").value.trim();
+  const amount = parseFloat(document.getElementById("in-amount").value);
+  const payer  = document.getElementById("in-payer").value;
+  const cat    = document.getElementById("in-cat").value;
+  const date   = document.getElementById("in-date").value;
+  const split  = persons.filter(p => document.getElementById("split-"+p).checked);
+  if(!desc||isNaN(amount)||amount<=0||!split.length){alert("Bitte alle Felder ausfüllen!");return;}
+  db.ref("expenses").push({desc,amount,payer,cat,date,split,auto:false});
+  document.getElementById("in-desc").value="";
+  document.getElementById("in-amount").value="";
+  document.getElementById("in-date").value=today;
+  showTab("uebersicht");
+}
+
+function deleteExpense(fbKey) {
+  if(!confirm("Ausgabe wirklich löschen?")) return;
+  db.ref("expenses/"+fbKey).remove();
+}
+
+// ── FIXKOSTEN ─────────────────────────────────────────────────────────────
+function applyFixedCosts() {
+  const thisMonth = yymm(new Date());
+  fixedCosts.forEach(fc => {
+    const alreadyIn = expenses.some(e => e.fixedId===fc.fbKey && e.date.startsWith(thisMonth));
+    if(!alreadyIn) {
+      db.ref("expenses").push({
+        desc: fc.desc+" (automatisch)", amount:fc.amount, payer:fc.payer,
+        cat:fc.cat, date:thisMonth+"-01", split:fc.split, fixedId:fc.fbKey, auto:true
+      });
+    }
+  });
+}
+
+function addFixed() {
+  const desc   = document.getElementById("fix-desc").value.trim();
+  const amount = parseFloat(document.getElementById("fix-amount").value);
+  const payer  = document.getElementById("fix-payer").value;
+  const cat    = document.getElementById("fix-cat").value;
+  const split  = persons.filter(p => document.getElementById("fsplit-"+p).checked);
+  if(!desc||isNaN(amount)||amount<=0||!split.length){alert("Bitte alle Felder ausfüllen!");return;}
+  db.ref("fixedCosts").push({desc,amount,payer,cat,split});
+  document.getElementById("fix-desc").value="";
+  document.getElementById("fix-amount").value="";
+}
+
+function deleteFixed(fbKey) {
+  if(!confirm("Fixkosten löschen?")) return;
+  db.ref("fixedCosts/"+fbKey).remove();
+}
+
+function renderFixedList() {
+  const el = document.getElementById("fix-list");
+  if(!el) return;
+  if(!fixedCosts.length){el.innerHTML='<div class="empty">Keine Fixkosten eingetragen.</div>';return;}
+  const total = fixedCosts.reduce((s,f)=>s+f.amount,0);
+  el.innerHTML = fixedCosts.map(f=>`
+    <div class="row">
+      <div class="row-desc">
+        <div class="row-title">${f.desc} <span class="tag-fix">monatlich</span></div>
+        <div class="row-meta">${f.cat} · ${f.split.map(p=>pLabels[p]).join(", ")} (je ${fmt(f.amount/f.split.length)})</div>
+      </div>
+      <span class="badge badge-${f.payer}">${pLabels[f.payer]}</span>
+      <div class="row-amount">${fmt(f.amount)}</div>
+      <button class="btn btn-sm btn-danger" onclick="deleteFixed('${f.fbKey}')"><i class="ti ti-trash"></i></button>
+    </div>`).join("")
+    +`<div style="display:flex;justify-content:flex-end;padding-top:10px;font-weight:500;font-size:14px">Gesamt: ${fmt(total)}/Monat</div>`;
+}
+
+// ── MONATSÜBERSICHT ───────────────────────────────────────────────────────
+function changeMonth(dir) {
+  currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth()+dir, 1);
+  renderMonth();
+}
+
+function renderMonth() {
+  const title = document.getElementById("month-title");
+  if(title) title.textContent = fmtM(currentMonth);
+  const key   = yymm(currentMonth);
+  const moExp = expenses.filter(e=>e.date.startsWith(key));
+  const moTotal = moExp.reduce((s,e)=>s+e.amount,0);
+  const moFix   = moExp.filter(e=>e.auto).reduce((s,e)=>s+e.amount,0);
+  document.getElementById("mo-gesamt").textContent = fmt(moTotal);
+  document.getElementById("mo-fix").textContent    = fmt(moFix);
+  document.getElementById("mo-var").textContent    = fmt(moTotal-moFix);
+  const catTotals={};
+  moExp.forEach(e=>{catTotals[e.cat]=(catTotals[e.cat]||0)+e.amount;});
+  const cats=Object.keys(catTotals);
+  if(catChart) catChart.destroy();
+  if(cats.length) {
+    catChart = new Chart(document.getElementById("catChart"),{
+      type:"doughnut",
+      data:{labels:cats.map(c=>catLabels[c]||c), datasets:[{data:cats.map(c=>Math.round(catTotals[c]*100)/100),backgroundColor:catColors}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"right"}}}
+    });
+  }
+  document.getElementById("mo-ausgaben").innerHTML = moExp.length
+    ? [...moExp].reverse().map(e=>`<div class="row">
+        <div class="row-desc">
+          <div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':""}</div>
+          <div class="row-meta">${e.date} · ${e.cat} · ${e.split.map(p=>pLabels[p]).join(", ")} (je ${fmt(e.amount/e.split.length)})</div>
+        </div>
+        <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
+        <div class="row-amount">${fmt(e.amount)}</div>
+      </div>`).join("")
+    : '<div class="empty">Keine Ausgaben in diesem Monat.</div>';
+}
+
+// ── HAUSBAU ───────────────────────────────────────────────────────────────
+function addHausbau() {
+  const desc   = document.getElementById("hb-desc").value.trim();
+  const amount = parseFloat(document.getElementById("hb-amount").value);
+  const date   = document.getElementById("hb-date").value;
+  const firma  = document.getElementById("hb-firma").value.trim();
+  const cat    = document.getElementById("hb-cat").value;
+  const status = document.getElementById("hb-status").value;
+  if(!desc||isNaN(amount)||amount<=0){alert("Bitte Beschreibung und Betrag ausfüllen!");return;}
+  db.ref("hausbau").push({desc,amount,date,firma,cat,status});
+  document.getElementById("hb-desc").value="";
+  document.getElementById("hb-amount").value="";
+  document.getElementById("hb-firma").value="";
+  document.getElementById("hb-date").value=today;
+}
+
+function deleteHausbau(fbKey) {
+  if(!confirm("Eintrag löschen?")) return;
+  db.ref("hausbau/"+fbKey).remove();
+}
+
+function updateHausbauStatus(fbKey, status) {
+  const item = hausbauItems.find(i=>i.fbKey===fbKey);
+  if(!item) return;
+  const {fbKey:_, ...data} = item;
+  db.ref("hausbau/"+fbKey).set({...data, status});
+}
+
+function applyHausbauFilter() { renderHausbau(); }
+
+function renderHausbau() {
+  const el = document.getElementById("hb-list");
+  if(!el) return;
+  const filterCat    = document.getElementById("hb-filter-cat")?.value||"alle";
+  const filterStatus = document.getElementById("hb-filter-status")?.value||"alle";
+  let items = [...hausbauItems];
+  if(filterCat!=="alle")    items = items.filter(i=>i.cat===filterCat);
+  if(filterStatus!=="alle") items = items.filter(i=>i.status===filterStatus);
+  items.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  const total   = hausbauItems.reduce((s,i)=>s+i.amount,0);
+  const bezahlt = hausbauItems.filter(i=>i.status==="bezahlt").reduce((s,i)=>s+i.amount,0);
+  const offen   = hausbauItems.filter(i=>i.status==="offen"||i.status==="ausstehend").reduce((s,i)=>s+i.amount,0);
+  const t=document.getElementById("hb-total"); if(t) t.textContent=fmt(total);
+  const b=document.getElementById("hb-bezahlt"); if(b) b.textContent=fmt(bezahlt);
+  const o=document.getElementById("hb-offen"); if(o) o.textContent=fmt(offen);
+  if(!items.length){el.innerHTML='<div class="empty">Keine Einträge.</div>';return;}
+  const statusBg={offen:"var(--amber-bg)",bezahlt:"var(--green-bg)",ausstehend:"var(--blue-bg)",storniert:"var(--red-bg)"};
+  const statusFg={offen:"var(--amber-text)",bezahlt:"var(--green-text)",ausstehend:"var(--blue-text)",storniert:"var(--red-text)"};
+  el.innerHTML = items.map(i=>`
+    <div class="row" style="flex-wrap:wrap;gap:8px;padding:12px 0">
+      <div class="row-desc">
+        <div class="row-title" style="font-weight:500">${i.desc}</div>
+        <div class="row-meta">${i.date||""} ${i.firma?"· "+i.firma:""} · ${hbCatLabels[i.cat]||i.cat}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <select onchange="updateHausbauStatus('${i.fbKey}',this.value)"
+          style="font-size:12px;padding:3px 8px;border-radius:20px;border:none;background:${statusBg[i.status]||"var(--bg2)"};color:${statusFg[i.status]||"var(--text2)"};cursor:pointer;width:auto">
+          <option value="offen"      ${i.status==="offen"?"selected":""}>Offen</option>
+          <option value="ausstehend" ${i.status==="ausstehend"?"selected":""}>Ausstehend</option>
+          <option value="bezahlt"    ${i.status==="bezahlt"?"selected":""}>Bezahlt</option>
+          <option value="storniert"  ${i.status==="storniert"?"selected":""}>Storniert</option>
+        </select>
+        <div class="row-amount">${fmt(i.amount)}</div>
+        <button class="btn btn-sm btn-danger" onclick="deleteHausbau('${i.fbKey}')"><i class="ti ti-trash"></i></button>
+      </div>
+    </div>`).join("");
+}
+
+// ── GANTT ─────────────────────────────────────────────────────────────────
+function addGanttItem() {
+  const name     = document.getElementById("g-name").value.trim();
+  const start    = document.getElementById("g-start").value;
+  const end      = document.getElementById("g-end").value;
+  const cat      = document.getElementById("g-cat").value;
+  const progress = parseInt(document.getElementById("g-progress").value)||0;
+  const note     = document.getElementById("g-note").value.trim();
+  if(!name||!start||!end){alert("Bitte Name, Start und Ende ausfüllen!");return;}
+  if(start>end){alert("Startdatum muss vor dem Enddatum liegen!");return;}
+  db.ref("gantt").push({name,start,end,cat,progress,note});
+  document.getElementById("g-name").value="";
+  document.getElementById("g-note").value="";
+  document.getElementById("g-progress").value="0";
+  document.getElementById("g-progress-val").textContent="0%";
+}
+
+function deleteGanttItem(fbKey) {
+  if(!confirm("Phase löschen?")) return;
+  db.ref("gantt/"+fbKey).remove();
+}
+
+function updateGanttProgress(fbKey, val) {
+  const item = ganttItems.find(i=>i.fbKey===fbKey);
+  if(!item) return;
+  const {fbKey:_, ...data} = item;
+  db.ref("gantt/"+fbKey).set({...data, progress:parseInt(val)});
+}
+
+function renderGantt() {
+  const container = document.getElementById("gantt-chart");
+  const listEl    = document.getElementById("gantt-list");
+  if(!container) return;
+  if(!ganttItems.length){
+    container.innerHTML='<div class="empty">Noch keine Phasen eingetragen.</div>';
+    if(listEl) listEl.innerHTML="";
+    return;
+  }
+  const sorted = [...ganttItems].sort((a,b)=>a.start.localeCompare(b.start));
+  const allStarts = sorted.map(i=>new Date(i.start));
+  const allEnds   = sorted.map(i=>new Date(i.end));
+  const minDate   = new Date(Math.min(...allStarts));
+  const maxDate   = new Date(Math.max(...allEnds));
+  const totalDays = Math.max(1,(maxDate-minDate)/86400000)+1;
+  const todayD    = new Date();
+  const LABEL_W=170, BAR_W=Math.max(500,Math.ceil(totalDays*2.5)), ROW_H=44, HEADER_H=36;
+  const totalH = HEADER_H + sorted.length*ROW_H + 16;
+  function dx(dateStr){ return LABEL_W+((new Date(dateStr)-minDate)/86400000)/totalDays*BAR_W; }
+  // month headers
+  const months=[];
+  let cur=new Date(minDate.getFullYear(),minDate.getMonth(),1);
+  while(cur<=maxDate){months.push(new Date(cur));cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);}
+  let svg=`<svg viewBox="0 0 ${LABEL_W+BAR_W} ${totalH}" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:600px;font-family:-apple-system,sans-serif">`;
+  svg+=`<rect width="${LABEL_W+BAR_W}" height="${totalH}" fill="var(--bg)" rx="8"/>`;
+  months.forEach((m,mi)=>{
+    const x1=Math.max(LABEL_W,dx(m.toISOString().split("T")[0]));
+    const nm=new Date(m.getFullYear(),m.getMonth()+1,1);
+    const x2=Math.min(LABEL_W+BAR_W,dx(nm.toISOString().split("T")[0]));
+    svg+=`<rect x="${x1}" y="0" width="${x2-x1}" height="${totalH}" fill="${mi%2?"var(--bg2)":"var(--bg)"}"/>`;
+    svg+=`<text x="${(x1+x2)/2}" y="${HEADER_H/2+5}" text-anchor="middle" font-size="11" fill="var(--text2)">${monthNames[m.getMonth()].substring(0,3)} ${m.getFullYear()}</text>`;
+  });
+  svg+=`<line x1="0" y1="${HEADER_H}" x2="${LABEL_W+BAR_W}" y2="${HEADER_H}" stroke="var(--border)" stroke-width="1"/>`;
+  svg+=`<line x1="${LABEL_W}" y1="0" x2="${LABEL_W}" y2="${totalH}" stroke="var(--border)" stroke-width="1"/>`;
+  if(todayD>=minDate&&todayD<=maxDate){
+    const tx=dx(todayD.toISOString().split("T")[0]);
+    svg+=`<line x1="${tx}" y1="${HEADER_H}" x2="${tx}" y2="${totalH}" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.8"/>`;
+    svg+=`<text x="${tx+3}" y="${HEADER_H+13}" font-size="10" fill="var(--red)">Heute</text>`;
+  }
+  sorted.forEach((item,idx)=>{
+    const color=ganttColors[idx%ganttColors.length];
+    const y=HEADER_H+idx*ROW_H;
+    const x1=dx(item.start), x2=dx(item.end);
+    const bw=Math.max(4,x2-x1), pw=bw*(item.progress||0)/100;
+    svg+=`<rect x="0" y="${y}" width="${LABEL_W+BAR_W}" height="${ROW_H}" fill="${idx%2?"rgba(0,0,0,0.015)":"transparent"}"/>`;
+    svg+=`<line x1="0" y1="${y+ROW_H}" x2="${LABEL_W+BAR_W}" y2="${y+ROW_H}" stroke="var(--border)" stroke-width="0.5" opacity="0.5"/>`;
+    const lbl=item.name.length>20?item.name.substring(0,19)+"…":item.name;
+    svg+=`<text x="8" y="${y+ROW_H/2+5}" font-size="12" fill="var(--text)" font-weight="500">${lbl}</text>`;
+    svg+=`<rect x="${x1}" y="${y+10}" width="${bw}" height="${ROW_H-20}" rx="4" fill="${color}" opacity="0.18"/>`;
+    if(pw>0) svg+=`<rect x="${x1}" y="${y+10}" width="${pw}" height="${ROW_H-20}" rx="4" fill="${color}" opacity="0.85"/>`;
+    svg+=`<rect x="${x1}" y="${y+10}" width="${bw}" height="${ROW_H-20}" rx="4" fill="none" stroke="${color}" stroke-width="1.5"/>`;
+    if(bw>36) svg+=`<text x="${x1+bw/2}" y="${y+ROW_H/2+5}" text-anchor="middle" font-size="11" fill="${color}" font-weight="600">${item.progress||0}%</text>`;
+  });
+  svg+="</svg>";
+  container.innerHTML=svg;
+  if(!listEl) return;
+  listEl.innerHTML=sorted.map((item,idx)=>{
+    const color=ganttColors[idx%ganttColors.length];
+    const days=Math.round((new Date(item.end)-new Date(item.start))/86400000);
+    return `<div class="row" style="flex-wrap:wrap;gap:10px;padding:12px 0">
+      <div style="width:12px;height:12px;border-radius:3px;background:${color};flex-shrink:0;margin-top:3px"></div>
+      <div class="row-desc">
+        <div class="row-title" style="font-weight:500">${item.name}</div>
+        <div class="row-meta">${item.start} → ${item.end} · ${days} Tage · ${hbCatLabels[item.cat]||item.cat}${item.note?" · "+item.note:""}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+        <span style="font-size:12px;color:var(--text2)">Fortschritt:</span>
+        <input type="range" min="0" max="100" step="5" value="${item.progress||0}"
+          oninput="this.nextElementSibling.textContent=this.value+'%'"
+          onchange="updateGanttProgress('${item.fbKey}',this.value)"
+          style="width:80px;accent-color:${color}">
+        <span style="font-size:12px;font-weight:500;min-width:32px">${item.progress||0}%</span>
+        <button class="btn btn-sm btn-danger" onclick="deleteGanttItem('${item.fbKey}')"><i class="ti ti-trash"></i></button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+// ── ABRECHNUNG RENDER ─────────────────────────────────────────────────────
+function render() {
+  const total   = expenses.reduce((s,e)=>s+e.amount,0);
+  const key     = yymm(new Date());
+  const moTotal = expenses.filter(e=>e.date.startsWith(key)).reduce((s,e)=>s+e.amount,0);
+  const fixTotal= fixedCosts.reduce((s,f)=>s+f.amount,0);
+  const g=document.getElementById("m-gesamt"); if(g) g.textContent=fmt(total);
+  const m=document.getElementById("m-monat");  if(m) m.textContent=fmt(moTotal);
+  const f=document.getElementById("m-fix");    if(f) f.textContent=fmt(fixTotal)+"/Mo";
+  const paid={}, owes={};
+  persons.forEach(p=>{paid[p]=0;owes[p]=0;});
+  expenses.forEach(e=>{
+    paid[e.payer]+=e.amount;
+    const sh=e.amount/e.split.length;
+    e.split.forEach(p=>owes[p]+=sh);
+  });
+  const sb=document.getElementById("split-bars");
+  if(sb) sb.innerHTML=persons.map(p=>{
+    const pct=total>0?Math.round(paid[p]/total*100):0;
+    return `<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+        <span style="font-size:14px">${pLabels[p]}</span>
+        <span style="font-size:13px;color:var(--text2)">${fmt(paid[p])} bezahlt · ${fmt(owes[p])} Anteil</span>
+      </div>
+      <div style="background:var(--bg2);height:8px;border-radius:4px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:${pColors[p]};border-radius:4px"></div>
+      </div></div>`;
+  }).join("");
+  const la=document.getElementById("letzte-ausgaben");
+  if(la) la.innerHTML=[...expenses].reverse().slice(0,5).map(e=>`
+    <div class="row">
+      <div class="row-desc">
+        <div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':""}</div>
+        <div class="row-meta">${e.date} · ${e.cat}</div>
+      </div>
+      <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
+      <div class="row-amount">${fmt(e.amount)}</div>
+    </div>`).join("") || '<div class="empty">Noch keine Ausgaben.</div>';
+  const aa=document.getElementById("alle-ausgaben");
+  if(aa) aa.innerHTML=[...expenses].reverse().map(e=>`
+    <div class="row">
+      <div class="row-desc">
+        <div class="row-title">${e.desc}${e.auto?' <span class="tag-fix">fix</span>':""}</div>
+        <div class="row-meta">${e.date} · ${e.cat} · ${e.split.map(p=>pLabels[p]).join(", ")} (je ${fmt(e.amount/e.split.length)})</div>
+      </div>
+      <span class="badge badge-${e.payer}">${pLabels[e.payer]}</span>
+      <div class="row-amount">${fmt(e.amount)}</div>
+      ${!e.auto?`<button class="btn btn-sm btn-danger" onclick="deleteExpense('${e.fbKey}')"><i class="ti ti-trash"></i></button>`:""}
+    </div>`).join("") || '<div class="empty">Noch keine Ausgaben.</div>';
+  const bb=document.getElementById("balance-body");
+  if(bb) bb.innerHTML=persons.map(p=>{
+    const bal=paid[p]-owes[p];
+    return `<tr><td><span class="badge badge-${p}">${pLabels[p]}</span></td><td>${fmt(paid[p])}</td><td>${fmt(owes[p])}</td><td class="${bal>=0?"positive":"negative"}">${bal>=0?"+":""}${fmt(bal)}</td></tr>`;
+  }).join("");
+  const bk={};persons.forEach(p=>bk[p]=paid[p]-owes[p]);
+  const transfers=[];
+  for(let i=0;i<10;i++){
+    const deb=persons.reduce((a,c)=>bk[c]<bk[a]?c:a,persons[0]);
+    const cre=persons.reduce((a,c)=>bk[c]>bk[a]?c:a,persons[0]);
+    if(Math.abs(bk[deb])<0.01) break;
+    const amt=Math.min(-bk[deb],bk[cre]);
+    if(amt<0.01) break;
+    transfers.push({from:deb,to:cre,amt});
+    bk[deb]+=amt; bk[cre]-=amt;
+  }
+  const se=document.getElementById("settlements");
+  if(se) se.innerHTML=transfers.length
+    ? transfers.map(t=>`<div class="row">
+        <span class="badge badge-${t.from}">${pLabels[t.from]}</span>
+        <i class="ti ti-arrow-right" style="color:var(--text3)"></i>
+        <span class="badge badge-${t.to}">${pLabels[t.to]}</span>
+        <span style="margin-left:auto;font-weight:500">${fmt(t.amt)}</span>
+      </div>`).join("")
+    : '<div class="empty" style="padding:1rem">Alle Zahlungen sind ausgeglichen ✓</div>';
+}
+
+// ── KREDIT ────────────────────────────────────────────────────────────────
+function updateCredit() {
+  const P=parseFloat(document.getElementById("sl-betrag").value);
+  const r=parseFloat(document.getElementById("sl-zins").value)/100/12;
+  const n=parseInt(document.getElementById("sl-jahre").value)*12;
+  document.getElementById("out-betrag").textContent="€"+P.toLocaleString("de-AT");
+  document.getElementById("out-zins").textContent=parseFloat(document.getElementById("sl-zins").value).toFixed(1).replace(".",",")+"%";
+  document.getElementById("out-jahre").textContent=document.getElementById("sl-jahre").value+" Jahre";
+  const monthly=r===0?P/n:P*r*Math.pow(1+r,n)/(Math.pow(1+r,n)-1);
+  document.getElementById("cr-rate").textContent=fmt(monthly);
+  document.getElementById("cr-gesamt").textContent=fmt(monthly*n);
+  document.getElementById("cr-zinsen").textContent=fmt(monthly*n-P);
+  const years=parseInt(document.getElementById("sl-jahre").value);
+  const yL=[],yT=[],yZ=[];let rem=P;
+  for(let y=1;y<=years;y++){
+    let yi=0,yt=0;
+    for(let m2=0;m2<12;m2++){const ip=rem*r;yi+=ip;yt+=monthly-ip;rem-=(monthly-ip);}
+    yL.push("J"+y);yZ.push(Math.round(yi));yT.push(Math.round(yt));
+  }
+  if(creditChart) creditChart.destroy();
+  creditChart=new Chart(document.getElementById("creditChart"),{
+    type:"bar",
+    data:{labels:yL,datasets:[{label:"Tilgung",data:yT,backgroundColor:"#1D9E75"},{label:"Zinsen",data:yZ,backgroundColor:"#E24B4A"}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{stacked:true,ticks:{maxRotation:45,autoSkip:years>15}},y:{stacked:true,ticks:{callback:v=>"€"+v.toLocaleString("de-AT")}}}}
+  });
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────
+document.getElementById("in-date").value  = today;
+document.getElementById("hb-date").value  = today;
+document.getElementById("g-start").value  = today;
+document.getElementById("g-end").value    = today;
+document.getElementById("month-title").textContent = fmtM(currentMonth);
+setTimeout(updateCredit, 300);
+</script>
 </html>
